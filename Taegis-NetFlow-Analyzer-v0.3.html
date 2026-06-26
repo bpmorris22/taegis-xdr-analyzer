@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Taegis NetFlow Analyzer v0.2</title>
+<title>Taegis NetFlow Analyzer v0.3</title>
 <style>
   :root{
     --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#30363d;
@@ -76,7 +76,7 @@
 </head>
 <body>
 <header>
-  <h1>Taegis NetFlow Analyzer <small>v0.2 · Taegis XDR / FortiGate triage</small></h1>
+  <h1>Taegis NetFlow Analyzer <small>v0.3 · Taegis XDR / FortiGate triage</small></h1>
   <span class="pill">100% client-side · no network</span>
   <span class="pill" id="fname">no file loaded</span>
   <span class="pill" id="srcpill"></span>
@@ -99,6 +99,9 @@
     <input id="g-to" type="datetime-local" step="1">
     <button class="btn" id="g-full">full range</button>
     <button class="btn" id="g-clear">clear</button>
+    <label class="muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;border-left:1px solid var(--border);padding-left:12px">
+      <input type="checkbox" id="g-public" style="width:16px;height:16px;padding:0;margin:0;accent-color:var(--accent)"> Public IP only (src or dst)
+    </label>
     <span class="muted" id="g-info"></span>
   </div>
   <nav>
@@ -237,7 +240,7 @@ function parseCSV(text){
 }
 
 /* ---------- state ---------- */
-const TOOL='Taegis NetFlow Analyzer', VERSION='v0.2';
+const TOOL='Taegis NetFlow Analyzer', VERSION='v0.3';
 let HEADER=[], IDX={}, RAW=[], REC=[], IOCS=null, FILENAME='', DATAMIN=null, DATAMAX=null;
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 
@@ -247,6 +250,27 @@ function timeOK(r){ const f=gms('#g-from'), t=gms('#g-to'); if(f!=null&&r.tsv<f)
 function toUTCInput(ms){ return new Date(ms).toISOString().slice(0,19); }
 function isReset(r){ return r.cat==='netflow' && /RESET|RST/i.test(r.action); }
 function resetDir(r){ const a=(r.action||'').toUpperCase(); if(a.includes('CLIENT_TO_SERVER'))return 'C2S'; if(a.includes('SERVER_TO_CLIENT'))return 'S2C'; return ''; }
+
+/* public-IP filter: an address is "public" if it is a valid IP and NOT in any
+   RFC1918 / loopback / link-local / CGNAT / documentation / multicast / reserved range.
+   (ipToInt is declared below; function declarations hoist, so this is fine.) */
+function isPrivate4(ip){
+  const n=ipToInt(ip); if(n==null) return false;
+  const inb=(a,bits)=>{ const base=ipToInt(a); const mask=bits===0?0:(~0<<(32-bits))>>>0; return (n&mask)===(base&mask); };
+  return inb('10.0.0.0',8)||inb('172.16.0.0',12)||inb('192.168.0.0',16)||inb('127.0.0.0',8)||
+         inb('169.254.0.0',16)||inb('100.64.0.0',10)||inb('0.0.0.0',8)||inb('224.0.0.0',4)||
+         inb('240.0.0.0',4)||inb('192.0.0.0',24)||inb('192.0.2.0',24)||inb('198.51.100.0',24)||
+         inb('203.0.113.0',24)||inb('198.18.0.0',15)||ip==='255.255.255.255';
+}
+function isPublicIP(ip){
+  if(!ip) return false; ip=ip.trim();
+  if(ip.includes(':')){ const s=ip.toLowerCase(); return !(s==='::1'||s==='::'||s.startsWith('fe80')||s.startsWith('fc')||s.startsWith('fd')); }
+  if(ipToInt(ip)==null) return false;            // not a v4 address (hostname, blank, etc.)
+  return !isPrivate4(ip);
+}
+function publicOK(r){ if(!$('#g-public').checked) return true; return isPublicIP(r.src)||isPublicIP(r.dst); }
+/* single gate every view applies: time range AND public-IP toggle */
+function rowPass(r){ return timeOK(r) && publicOK(r); }
 
 function col(...names){ // first header index that exists
   for(const nm of names){ if(nm in IDX) return IDX[nm]; }
@@ -420,7 +444,7 @@ const sortNF={key:0,dir:-1}, sortRS={key:0,dir:-1}, sortAU={key:0,dir:-1}, sortI
 function ipCell(v){ return v?`<td class="mono ip">${esc(v)}</td>`:'<td></td>'; }
 
 function drawNetflow(){
-  const all=REC.filter(r=>r.cat==='netflow'&&timeOK(r));
+  const all=REC.filter(r=>r.cat==='netflow'&&rowPass(r));
   $('#nf-topsrc').innerHTML=topN(all,r=>r.src);
   $('#nf-topdst').innerHTML=topNBytes(all,r=>r.dst);
   $('#nf-topport').innerHTML=topN(all,r=>r.dport);
@@ -447,7 +471,7 @@ function drawNetflow(){
 }
 
 function drawReset(){
-  const all=REC.filter(r=>isReset(r)&&timeOK(r));
+  const all=REC.filter(r=>isReset(r)&&rowPass(r));
   $('#rs-topsrc').innerHTML=topN(all,r=>r.src);
   $('#rs-topdst').innerHTML=topN(all,r=>r.dst);
   // fan-out heuristic: per source, count of distinct destination ports among reset flows (scan indicator)
@@ -479,7 +503,7 @@ function drawReset(){
 }
 
 function drawAuth(){
-  const all=REC.filter(r=>r.cat==='auth'&&timeOK(r));
+  const all=REC.filter(r=>r.cat==='auth'&&rowPass(r));
   $('#au-topuser').innerHTML=topN(all,r=>r.user);
   $('#au-topip').innerHTML=topN(all,r=>r.src||r.dst);
   $('#au-result').innerHTML=topN(all,r=>r.result||r.action||r.authres);
@@ -545,7 +569,7 @@ function runSweep(){
   drawIOC(); drawTimeline();
 }
 function drawIOC(){
-  const rows=REC.filter(r=>r.__ioc&&timeOK(r));
+  const rows=REC.filter(r=>r.__ioc&&rowPass(r));
   const cols=[
     {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
     {h:'IOC',sort:r=>r.__ioc,td:r=>`<td class="mono" style="color:var(--ioc)">${esc(r.__ioc)}</td>`},
@@ -568,7 +592,7 @@ function drawTimeline(){
   const q=$('#tl-q').value.toLowerCase().trim(), tf=sel.value;
   const rows=REC.filter(r=>{
     if(tf&&r.type!==tf) return false;
-    if(!timeOK(r)) return false;
+    if(!rowPass(r)) return false;
     if(q){ const blob=[r.type,r.action,r.result,r.src,r.sport,r.dst,r.dport,r.proto,r.user,r.domain,r.event,r.host,r.device,r.sgeo,r.dgeo].join(' ').toLowerCase(); if(!blob.includes(q)) return false; }
     return true;
   });
@@ -593,14 +617,14 @@ function currentRows(view){
   if(view==='netflow'){ drawNetflow(); return collect('#nf-table'); }
   if(view==='reset'){ drawReset(); return window.__resetRows||[]; }
   if(view==='auth'){ drawAuth(); return collect('#au-table'); }
-  if(view==='ioc'){ return REC.filter(r=>r.__ioc&&timeOK(r)); }
+  if(view==='ioc'){ return REC.filter(r=>r.__ioc&&rowPass(r)); }
   if(view==='timeline'){ drawTimeline(); return window.__tlRows||[]; }
   return [];
 }
 function collect(sel){ // re-derive filtered rows for export by reading current filter inputs
-  if(sel==='#nf-table'){ const all=REC.filter(r=>r.cat==='netflow'&&timeOK(r)); const q=$('#nf-q').value.toLowerCase().trim(),af=$('#nf-action').value;
+  if(sel==='#nf-table'){ const all=REC.filter(r=>r.cat==='netflow'&&rowPass(r)); const q=$('#nf-q').value.toLowerCase().trim(),af=$('#nf-action').value;
     return all.filter(r=>(!af||r.action===af)&&(!q||[r.src,r.sport,r.dst,r.dport,r.proto,r.action,r.sgeo,r.dgeo].join(' ').toLowerCase().includes(q))); }
-  if(sel==='#au-table'){ const all=REC.filter(r=>r.cat==='auth'&&timeOK(r)); const q=$('#au-q').value.toLowerCase().trim(),rf=$('#au-res').value;
+  if(sel==='#au-table'){ const all=REC.filter(r=>r.cat==='auth'&&rowPass(r)); const q=$('#au-q').value.toLowerCase().trim(),rf=$('#au-res').value;
     return all.filter(r=>(!rf||(r.result||r.action)===rf)&&(!q||[r.user,r.src,r.dst,r.result,r.action,r.event,r.domain,r.authres,r.type].join(' ').toLowerCase().includes(q))); }
   return [];
 }
@@ -655,15 +679,15 @@ function ingest(text){
   $('#drop').classList.add('hidden'); $('#app').classList.remove('hidden');
   $('#srcpill').textContent=`${REC.length.toLocaleString()} events · ${HEADER.length} cols`;
   $('#footinfo').textContent=`${TOOL} ${VERSION}  ·  file: ${FILENAME||'(unknown)'}  ·  ${REC.length.toLocaleString()} events, ${HEADER.length} columns`;
-  $('#g-from').value=''; $('#g-to').value='';
+  $('#g-from').value=''; $('#g-to').value=''; $('#g-public').checked=false;
   buildStats(); redrawAll();
 }
 function redrawAll(){ updateGInfo(); drawNetflow(); drawReset(); drawAuth(); drawIOC(); drawTimeline(); }
 function updateGInfo(){
   if(!REC.length){ $('#g-info').textContent=''; return; }
-  const filtered=(gms('#g-from')!=null||gms('#g-to')!=null);
+  const filtered=(gms('#g-from')!=null||gms('#g-to')!=null||$('#g-public').checked);
   $('#g-info').textContent=filtered
-    ? `${REC.filter(timeOK).length.toLocaleString()} of ${REC.length.toLocaleString()} events in range`
+    ? `${REC.filter(rowPass).length.toLocaleString()} of ${REC.length.toLocaleString()} events shown`
     : `full dataset (${REC.length.toLocaleString()} events)`;
 }
 function readFile(f){ FILENAME=f.name; $('#fname').textContent='📄 '+f.name; $('#srcpill').textContent='loading…'; const r=new FileReader(); r.onload=()=>ingest(r.result); r.readAsText(f); }
@@ -686,8 +710,8 @@ $('#au-q').oninput=drawAuth; $('#au-res').onchange=drawAuth;
 $('#tl-q').oninput=drawTimeline; $('#tl-type').onchange=drawTimeline;
 $('#tl-clear').onclick=()=>{ $('#tl-q').value='';$('#tl-type').value=''; drawTimeline(); };
 $('#tl-copy').onclick=copyNotes;
-$('#g-from').onchange=redrawAll; $('#g-to').onchange=redrawAll;
-$('#g-clear').onclick=()=>{ $('#g-from').value=''; $('#g-to').value=''; redrawAll(); };
+$('#g-from').onchange=redrawAll; $('#g-to').onchange=redrawAll; $('#g-public').onchange=redrawAll;
+$('#g-clear').onclick=()=>{ $('#g-from').value=''; $('#g-to').value=''; $('#g-public').checked=false; redrawAll(); };
 $('#g-full').onclick=()=>{ if(DATAMIN!=null){ $('#g-from').value=toUTCInput(DATAMIN); $('#g-to').value=toUTCInput(DATAMAX); } redrawAll(); };
 $('#ioc-run').onclick=runSweep;
 $('#ioc-loadfile').onclick=()=>$('#ioc-file').click();

@@ -1,6 +1,6 @@
 # Taegis NetFlow Analyzer
 
-**Current build:** `Taegis-NetFlow-Analyzer-v0.2.html` (v0.2)
+**Current build:** `Taegis-NetFlow-Analyzer-v0.3.html` (v0.3)
 
 A single-file, **100% client-side** HTML tool for triaging **Secureworks Taegis XDR**
 search exports — the 252-column normalized event schema that carries FortiGate
@@ -20,6 +20,11 @@ the analyst's machine.
   **every** view at once. `datetime-local` inputs are interpreted as **UTC** to
   match the displayed event times; a **full range** button auto-fills the
   dataset's bounds.
+- **Public IP only (src or dst)** — a global checkbox that, when ticked, keeps
+  only rows where the source or destination is a routable public address.
+  RFC1918, loopback, link-local (169.254/16), CGNAT (100.64/10), documentation,
+  multicast, and reserved ranges are treated as non-public (basic IPv6 ULA /
+  loopback / link-local handling included). Applies to every view.
 - **Netflow triage** — top source/destination IPs, top destination IPs by bytes,
   top destination ports, with action / protocol / application columns and a
   filterable, sortable flow table.
@@ -40,7 +45,7 @@ footer of the page.
 
 ## Usage
 
-1. Open `Taegis-NetFlow-Analyzer-v0.2.html` in a browser (double-click).
+1. Open `Taegis-NetFlow-Analyzer-v0.3.html` in a browser (double-click).
 2. Drag a Taegis XDR export CSV onto the drop zone (or click **Load CSV…**).
 3. Use the tabs to triage. Click any IP to filter all views to it. Set a
    **Time range (UTC)** at the top to scope every view to a window.
