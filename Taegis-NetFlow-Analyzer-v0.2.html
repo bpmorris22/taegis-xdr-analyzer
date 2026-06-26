@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Taegis XDR / FortiGate VPN Analyzer</title>
+<title>Taegis NetFlow Analyzer v0.2</title>
 <style>
   :root{
     --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#30363d;
@@ -76,9 +76,10 @@
 </head>
 <body>
 <header>
-  <h1>Taegis XDR / FortiGate VPN Analyzer <small>— DFIR artifact triage</small></h1>
+  <h1>Taegis NetFlow Analyzer <small>v0.2 · Taegis XDR / FortiGate triage</small></h1>
   <span class="pill">100% client-side · no network</span>
-  <span class="pill" id="srcpill">no file loaded</span>
+  <span class="pill" id="fname">no file loaded</span>
+  <span class="pill" id="srcpill"></span>
   <span style="flex:1"></span>
   <button class="btn" id="loadBtn">Load CSV…</button>
   <input type="file" id="file" accept=".csv,text/csv" class="hidden">
@@ -91,8 +92,18 @@
 
 <div id="app" class="hidden">
   <div class="bar" id="statbar"></div>
+  <div class="bar" id="gfilter">
+    <strong style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)">Time range (UTC)</strong>
+    <input id="g-from" type="datetime-local" step="1">
+    <span class="muted">→</span>
+    <input id="g-to" type="datetime-local" step="1">
+    <button class="btn" id="g-full">full range</button>
+    <button class="btn" id="g-clear">clear</button>
+    <span class="muted" id="g-info"></span>
+  </div>
   <nav>
     <button data-v="netflow" class="active">Netflow Triage</button>
+    <button data-v="reset">TCP Reset Anomalies</button>
     <button data-v="auth">Auth / Logon Timeline</button>
     <button data-v="ioc">IOC Sweep</button>
     <button data-v="timeline">Unified Timeline + Export</button>
@@ -114,6 +125,24 @@
       </div>
       <div class="scroll"><table id="nf-table"></table></div>
       <p class="footnote">Bytes = tx+rx. Click an IP to filter every view to it.</p>
+    </section>
+
+    <!-- TCP RESET ANOMALIES -->
+    <section class="view" id="view-reset">
+      <div class="grid3">
+        <div class="card"><h3>Top reset sources</h3><div id="rs-topsrc"></div></div>
+        <div class="card"><h3>Top reset destinations</h3><div id="rs-topdst"></div></div>
+        <div class="card"><h3>Reset fan-out by source (distinct dst ports)</h3><div id="rs-fanout"></div></div>
+      </div>
+      <div class="controls">
+        <input id="rs-q" placeholder="filter (ip, port, app…)" style="min-width:260px">
+        <select id="rs-dir"><option value="">both directions</option><option value="C2S">client→server resets</option><option value="S2C">server→client resets</option></select>
+        <span class="muted" id="rs-count"></span>
+        <span style="flex:1"></span>
+        <button class="btn" data-export="reset">Export view → CSV</button>
+      </div>
+      <div class="scroll"><table id="rs-table"></table></div>
+      <p class="footnote">FortiGate <span class="mono">FW_RESET_*</span> flows — connections torn down by RST. High fan-out from one source to many ports/hosts suggests scanning; bursts of server→client resets can indicate blocked or failing services. Click an IP to pivot every view to it.</p>
     </section>
 
     <!-- AUTH -->
@@ -166,10 +195,7 @@
       <div class="controls">
         <input id="tl-q" placeholder="free-text filter across all fields…" style="min-width:300px">
         <select id="tl-type"><option value="">all types</option></select>
-        <input id="tl-from" type="datetime-local">
-        <span class="muted">→</span>
-        <input id="tl-to" type="datetime-local">
-        <button class="btn" id="tl-clear">clear</button>
+        <button class="btn" id="tl-clear">clear text/type</button>
         <span class="muted" id="tl-count"></span>
         <span style="flex:1"></span>
         <button class="btn" data-export="timeline">Export view → CSV</button>
@@ -179,6 +205,9 @@
       <p class="footnote">All event types merged on one timeline (UTC). IOC-matched rows are highlighted if a sweep has been run.</p>
     </section>
   </main>
+  <footer style="padding:10px 16px;border-top:1px solid var(--border);color:var(--muted);font-size:11px">
+    <span id="footinfo"></span>
+  </footer>
 </div>
 
 <script>
@@ -208,8 +237,16 @@ function parseCSV(text){
 }
 
 /* ---------- state ---------- */
-let HEADER=[], IDX={}, RAW=[], REC=[], IOCS=null;
+const TOOL='Taegis NetFlow Analyzer', VERSION='v0.2';
+let HEADER=[], IDX={}, RAW=[], REC=[], IOCS=null, FILENAME='', DATAMIN=null, DATAMAX=null;
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+
+/* global UTC time-range filter (datetime-local values are read as UTC to match the displayed times) */
+function gms(sel){ const v=$(sel).value; if(!v) return null; const s=(v.length===16?v+':00':v)+'Z'; const t=Date.parse(s); return isNaN(t)?null:t; }
+function timeOK(r){ const f=gms('#g-from'), t=gms('#g-to'); if(f!=null&&r.tsv<f) return false; if(t!=null&&r.tsv>t) return false; return true; }
+function toUTCInput(ms){ return new Date(ms).toISOString().slice(0,19); }
+function isReset(r){ return r.cat==='netflow' && /RESET|RST/i.test(r.action); }
+function resetDir(r){ const a=(r.action||'').toUpperCase(); if(a.includes('CLIENT_TO_SERVER'))return 'C2S'; if(a.includes('SERVER_TO_CLIENT'))return 'S2C'; return ''; }
 
 function col(...names){ // first header index that exists
   for(const nm of names){ if(nm in IDX) return IDX[nm]; }
@@ -373,17 +410,17 @@ function wireIPs(){ /* delegation handled per render via class .ip */ }
 document.addEventListener('click',e=>{
   const ip=e.target.closest('.ip'); if(!ip) return;
   const v=ip.textContent.trim();
-  $('#nf-q').value=v; $('#au-q').value=v; $('#tl-q').value=v;
-  drawNetflow(); drawAuth(); drawTimeline();
+  $('#nf-q').value=v; $('#rs-q').value=v; $('#au-q').value=v; $('#tl-q').value=v;
+  drawNetflow(); drawReset(); drawAuth(); drawTimeline();
 });
 
 /* ---------- views ---------- */
-const sortNF={key:0,dir:-1}, sortAU={key:0,dir:-1}, sortIOC={key:0,dir:-1}, sortTL={key:0,dir:-1};
+const sortNF={key:0,dir:-1}, sortRS={key:0,dir:-1}, sortAU={key:0,dir:-1}, sortIOC={key:0,dir:-1}, sortTL={key:0,dir:-1};
 
 function ipCell(v){ return v?`<td class="mono ip">${esc(v)}</td>`:'<td></td>'; }
 
 function drawNetflow(){
-  const all=REC.filter(r=>r.cat==='netflow');
+  const all=REC.filter(r=>r.cat==='netflow'&&timeOK(r));
   $('#nf-topsrc').innerHTML=topN(all,r=>r.src);
   $('#nf-topdst').innerHTML=topNBytes(all,r=>r.dst);
   $('#nf-topport').innerHTML=topN(all,r=>r.dport);
@@ -409,8 +446,40 @@ function drawNetflow(){
   $('#nf-count').textContent=`${total.toLocaleString()} flows`+(shown<total?` (showing ${shown.toLocaleString()})`:'');
 }
 
+function drawReset(){
+  const all=REC.filter(r=>isReset(r)&&timeOK(r));
+  $('#rs-topsrc').innerHTML=topN(all,r=>r.src);
+  $('#rs-topdst').innerHTML=topN(all,r=>r.dst);
+  // fan-out heuristic: per source, count of distinct destination ports among reset flows (scan indicator)
+  const fan=new Map();
+  for(const r of all){ if(!r.src) continue; if(!fan.has(r.src)) fan.set(r.src,new Set()); if(r.dport) fan.get(r.src).add(r.dport); }
+  const fanArr=[...fan.entries()].map(([k,s])=>[k,s.size]).sort((a,b)=>b[1]-a[1]).slice(0,10);
+  const fmax=fanArr.length?fanArr[0][1]:1;
+  $('#rs-fanout').innerHTML=fanArr.map(([k,v])=>
+    `<div class="barrow"><span class="lab" title="${esc(k)}">${esc(k)}</span>`+
+    `<span class="track"><span class="fill" style="width:${(v/fmax*100).toFixed(1)}%"></span></span>`+
+    `<span class="val">${v} port${v===1?'':'s'}</span></div>`).join('') || '<span class="muted">none</span>';
+  const q=$('#rs-q').value.toLowerCase().trim(), df=$('#rs-dir').value;
+  const rows=all.filter(r=>(!df||resetDir(r)===df)&&(!q||[r.src,r.sport,r.dst,r.dport,r.proto,r.app,r.action,r.dgeo].join(' ').toLowerCase().includes(q)));
+  const cols=[
+    {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
+    {h:'Reset',sort:r=>r.action,td:r=>`<td><span class="tag bad" title="${esc(r.action)}">${resetDir(r)||'RST'}</span></td>`},
+    {h:'Source',sort:r=>r.src,td:r=>ipCell(r.src)},
+    {h:'sPort',sort:r=>+r.sport||0,td:r=>`<td class="mono">${esc(r.sport)}</td>`},
+    {h:'Destination',sort:r=>r.dst,td:r=>ipCell(r.dst)},
+    {h:'dPort',sort:r=>+r.dport||0,td:r=>`<td class="mono">${esc(r.dport)}</td>`},
+    {h:'Proto',sort:r=>r.proto,td:r=>`<td class="mono">${esc(r.proto)}</td>`},
+    {h:'Bytes',sort:r=>r.bytes,td:r=>`<td class="num">${esc(fmtBytes(r.bytes))}</td>`},
+    {h:'Application',sort:r=>r.app,td:r=>`<td title="${esc(r.app)}">${esc(r.app)}</td>`},
+    {h:'Dst geo',sort:r=>r.dgeo,td:r=>`<td title="${esc(r.dgeo)}">${esc(r.dgeo)}</td>`},
+  ];
+  const {total,shown}=renderTable($('#rs-table'),cols,rows,sortRS);
+  $('#rs-count').textContent=`${total.toLocaleString()} reset flows`+(shown<total?` (showing ${shown.toLocaleString()})`:'');
+  window.__resetRows=rows;
+}
+
 function drawAuth(){
-  const all=REC.filter(r=>r.cat==='auth');
+  const all=REC.filter(r=>r.cat==='auth'&&timeOK(r));
   $('#au-topuser').innerHTML=topN(all,r=>r.user);
   $('#au-topip').innerHTML=topN(all,r=>r.src||r.dst);
   $('#au-result').innerHTML=topN(all,r=>r.result||r.action||r.authres);
@@ -476,7 +545,7 @@ function runSweep(){
   drawIOC(); drawTimeline();
 }
 function drawIOC(){
-  const rows=REC.filter(r=>r.__ioc);
+  const rows=REC.filter(r=>r.__ioc&&timeOK(r));
   const cols=[
     {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
     {h:'IOC',sort:r=>r.__ioc,td:r=>`<td class="mono" style="color:var(--ioc)">${esc(r.__ioc)}</td>`},
@@ -497,12 +566,9 @@ function drawTimeline(){
   const sel=$('#tl-type');
   if(sel.options.length<=1){ [...new Set(REC.map(r=>r.type).filter(Boolean))].sort().forEach(t=>sel.add(new Option(t,t))); }
   const q=$('#tl-q').value.toLowerCase().trim(), tf=sel.value;
-  const from=$('#tl-from').value?new Date($('#tl-from').value).getTime():null;
-  const to=$('#tl-to').value?new Date($('#tl-to').value).getTime():null;
   const rows=REC.filter(r=>{
     if(tf&&r.type!==tf) return false;
-    if(from&&r.tsv<from) return false;
-    if(to&&r.tsv>to) return false;
+    if(!timeOK(r)) return false;
     if(q){ const blob=[r.type,r.action,r.result,r.src,r.sport,r.dst,r.dport,r.proto,r.user,r.domain,r.event,r.host,r.device,r.sgeo,r.dgeo].join(' ').toLowerCase(); if(!blob.includes(q)) return false; }
     return true;
   });
@@ -525,15 +591,16 @@ function drawTimeline(){
 /* ---------- export ---------- */
 function currentRows(view){
   if(view==='netflow'){ drawNetflow(); return collect('#nf-table'); }
+  if(view==='reset'){ drawReset(); return window.__resetRows||[]; }
   if(view==='auth'){ drawAuth(); return collect('#au-table'); }
-  if(view==='ioc'){ return REC.filter(r=>r.__ioc); }
+  if(view==='ioc'){ return REC.filter(r=>r.__ioc&&timeOK(r)); }
   if(view==='timeline'){ drawTimeline(); return window.__tlRows||[]; }
   return [];
 }
 function collect(sel){ // re-derive filtered rows for export by reading current filter inputs
-  if(sel==='#nf-table'){ const all=REC.filter(r=>r.cat==='netflow'); const q=$('#nf-q').value.toLowerCase().trim(),af=$('#nf-action').value;
+  if(sel==='#nf-table'){ const all=REC.filter(r=>r.cat==='netflow'&&timeOK(r)); const q=$('#nf-q').value.toLowerCase().trim(),af=$('#nf-action').value;
     return all.filter(r=>(!af||r.action===af)&&(!q||[r.src,r.sport,r.dst,r.dport,r.proto,r.action,r.sgeo,r.dgeo].join(' ').toLowerCase().includes(q))); }
-  if(sel==='#au-table'){ const all=REC.filter(r=>r.cat==='auth'); const q=$('#au-q').value.toLowerCase().trim(),rf=$('#au-res').value;
+  if(sel==='#au-table'){ const all=REC.filter(r=>r.cat==='auth'&&timeOK(r)); const q=$('#au-q').value.toLowerCase().trim(),rf=$('#au-res').value;
     return all.filter(r=>(!rf||(r.result||r.action)===rf)&&(!q||[r.user,r.src,r.dst,r.result,r.action,r.event,r.domain,r.authres,r.type].join(' ').toLowerCase().includes(q))); }
   return [];
 }
@@ -543,7 +610,8 @@ function exportCSV(view){
   const rows=currentRows(view);
   const head=['time_utc',...EXPORT_FIELDS.slice(1)].join(',');
   const body=rows.map(r=>[fmtTs(r.ts),r.type,r.action,r.result,r.src,r.sport,r.dst,r.dport,r.proto,r.bytes,r.pkts,r.user,r.domain,r.host,r.event,r.device,r.sgeo,r.dgeo,r.__ioc||''].map(csvCell).join(',')).join('\n');
-  download(`taegis-${view}-export.csv`, head+'\n'+body);
+  const base=FILENAME?FILENAME.replace(/\.csv$/i,''):'taegis';
+  download(`${base}__${view}.csv`, head+'\n'+body);
 }
 function download(name,text){
   const b=new Blob([text],{type:'text/csv'}); const u=URL.createObjectURL(b);
@@ -564,6 +632,7 @@ function buildStats(){
   let min=Infinity,max=-Infinity;
   for(const r of REC){ byCat[r.cat]++; const v=r.vendor||r.sensor; if(v)vendors.add(v); if(r.cat==='netflow'&&r.device)devices.add(r.device);
     if(r.tsv){ if(r.tsv<min)min=r.tsv; if(r.tsv>max)max=r.tsv; } }
+  DATAMIN=(min<Infinity)?min:null; DATAMAX=(max>-Infinity)?max:null;
   const span=(min<max)?`${fmtTs(new Date(min))} → ${fmtTs(new Date(max))}`:'—';
   $('#statbar').innerHTML=
     stat(total.toLocaleString(),'events')+
@@ -585,9 +654,19 @@ function ingest(text){
   REC=[]; for(let i=1;i<RAW.length;i++){ if(RAW[i].length<2) continue; REC.push(normalize(RAW[i])); }
   $('#drop').classList.add('hidden'); $('#app').classList.remove('hidden');
   $('#srcpill').textContent=`${REC.length.toLocaleString()} events · ${HEADER.length} cols`;
-  buildStats(); drawNetflow(); drawAuth(); drawIOC(); drawTimeline();
+  $('#footinfo').textContent=`${TOOL} ${VERSION}  ·  file: ${FILENAME||'(unknown)'}  ·  ${REC.length.toLocaleString()} events, ${HEADER.length} columns`;
+  $('#g-from').value=''; $('#g-to').value='';
+  buildStats(); redrawAll();
 }
-function readFile(f){ const r=new FileReader(); r.onload=()=>ingest(r.result); r.readAsText(f); $('#srcpill').textContent='loading '+f.name+'…'; }
+function redrawAll(){ updateGInfo(); drawNetflow(); drawReset(); drawAuth(); drawIOC(); drawTimeline(); }
+function updateGInfo(){
+  if(!REC.length){ $('#g-info').textContent=''; return; }
+  const filtered=(gms('#g-from')!=null||gms('#g-to')!=null);
+  $('#g-info').textContent=filtered
+    ? `${REC.filter(timeOK).length.toLocaleString()} of ${REC.length.toLocaleString()} events in range`
+    : `full dataset (${REC.length.toLocaleString()} events)`;
+}
+function readFile(f){ FILENAME=f.name; $('#fname').textContent='📄 '+f.name; $('#srcpill').textContent='loading…'; const r=new FileReader(); r.onload=()=>ingest(r.result); r.readAsText(f); }
 
 /* ---------- wiring ---------- */
 $('#loadBtn').onclick=()=>$('#file').click();
@@ -602,10 +681,14 @@ $$('nav button').forEach(b=>b.onclick=()=>{
   $$('.view').forEach(v=>v.classList.remove('active')); $('#view-'+b.dataset.v).classList.add('active');
 });
 $('#nf-q').oninput=drawNetflow; $('#nf-action').onchange=drawNetflow;
+$('#rs-q').oninput=drawReset; $('#rs-dir').onchange=drawReset;
 $('#au-q').oninput=drawAuth; $('#au-res').onchange=drawAuth;
-$('#tl-q').oninput=drawTimeline; $('#tl-type').onchange=drawTimeline; $('#tl-from').onchange=drawTimeline; $('#tl-to').onchange=drawTimeline;
-$('#tl-clear').onclick=()=>{ $('#tl-q').value='';$('#tl-type').value='';$('#tl-from').value='';$('#tl-to').value=''; drawTimeline(); };
+$('#tl-q').oninput=drawTimeline; $('#tl-type').onchange=drawTimeline;
+$('#tl-clear').onclick=()=>{ $('#tl-q').value='';$('#tl-type').value=''; drawTimeline(); };
 $('#tl-copy').onclick=copyNotes;
+$('#g-from').onchange=redrawAll; $('#g-to').onchange=redrawAll;
+$('#g-clear').onclick=()=>{ $('#g-from').value=''; $('#g-to').value=''; redrawAll(); };
+$('#g-full').onclick=()=>{ if(DATAMIN!=null){ $('#g-from').value=toUTCInput(DATAMIN); $('#g-to').value=toUTCInput(DATAMAX); } redrawAll(); };
 $('#ioc-run').onclick=runSweep;
 $('#ioc-loadfile').onclick=()=>$('#ioc-file').click();
 $('#ioc-file').onchange=e=>{ const f=e.target.files[0]; if(!f)return; const r=new FileReader(); r.onload=()=>{ $('#ioc-input').value=r.result; runSweep(); }; r.readAsText(f); };

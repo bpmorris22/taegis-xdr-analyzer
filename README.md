@@ -1,4 +1,6 @@
-# Taegis XDR / FortiGate VPN Analyzer
+# Taegis NetFlow Analyzer
+
+**Current build:** `Taegis-NetFlow-Analyzer-v0.2.html` (v0.2)
 
 A single-file, **100% client-side** HTML tool for triaging **Secureworks Taegis XDR**
 search exports — the 252-column normalized event schema that carries FortiGate
@@ -14,22 +16,34 @@ the analyst's machine.
 
 ## Features
 
+- **Global time-range filter (UTC)** — a `From → To` range at the top filters
+  **every** view at once. `datetime-local` inputs are interpreted as **UTC** to
+  match the displayed event times; a **full range** button auto-fills the
+  dataset's bounds.
 - **Netflow triage** — top source/destination IPs, top destination IPs by bytes,
   top destination ports, with action / protocol / application columns and a
   filterable, sortable flow table.
+- **TCP reset anomalies** — isolates FortiGate `FW_RESET_*` flows (connections
+  torn down by RST), with top reset sources/destinations, a **fan-out heuristic**
+  (distinct destination ports per source — a scanning indicator), and a
+  direction filter (client→server / server→client resets).
 - **Auth / logon timeline** — `auth` + `cloudaudit` events (M365 / Entra sign-ins)
   with user, source IP, result, **MFA result**, and application.
 - **IOC sweep** — paste or load a list of IPs, CIDRs, and domains; matched events
   are highlighted across every view (CIDR-aware matching).
 - **Unified timeline + export** — all event types merged on one UTC timeline with
-  free-text and time-range filtering, CSV export of the current view, and a
-  "copy for case notes" button.
+  free-text filtering, CSV export of the current view (named after the loaded
+  file), and a "copy for case notes" button.
+
+The loaded CSV's filename and the tool name/version are shown in the header and
+footer of the page.
 
 ## Usage
 
-1. Open `taegis-xdr-analyzer.html` in a browser (double-click).
+1. Open `Taegis-NetFlow-Analyzer-v0.2.html` in a browser (double-click).
 2. Drag a Taegis XDR export CSV onto the drop zone (or click **Load CSV…**).
-3. Use the tabs to triage. Click any IP to filter all views to it.
+3. Use the tabs to triage. Click any IP to filter all views to it. Set a
+   **Time range (UTC)** at the top to scope every view to a window.
 
 ## Why a dedicated parser
 
