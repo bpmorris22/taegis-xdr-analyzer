@@ -1,0 +1,615 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Taegis XDR / FortiGate VPN Analyzer</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#30363d;
+    --fg:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --accent2:#1f6feb;
+    --ok:#3fb950; --warn:#d29922; --bad:#f85149; --ioc:#ff6b6b;
+    --mono:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--fg);font:13px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  header{padding:10px 16px;background:linear-gradient(90deg,#0d1117,#161b22);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  header h1{font-size:15px;margin:0;font-weight:600}
+  header h1 small{color:var(--muted);font-weight:400}
+  .pill{font-size:11px;color:var(--muted);border:1px solid var(--border);border-radius:20px;padding:2px 10px}
+  #drop{margin:16px;padding:34px;border:2px dashed var(--border);border-radius:10px;text-align:center;color:var(--muted);cursor:pointer;transition:.15s}
+  #drop.hot{border-color:var(--accent);background:rgba(88,166,255,.06);color:var(--fg)}
+  #drop b{color:var(--accent)}
+  .hidden{display:none!important}
+  .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--border)}
+  .stat{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:6px 12px;min-width:80px}
+  .stat .n{font-size:18px;font-weight:700}
+  .stat .l{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  nav{display:flex;gap:2px;padding:0 16px;background:var(--panel);border-bottom:1px solid var(--border)}
+  nav button{background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);padding:10px 16px;cursor:pointer;font-size:13px}
+  nav button.active{color:var(--fg);border-bottom-color:var(--accent)}
+  nav button:hover{color:var(--fg)}
+  main{padding:16px}
+  .view{display:none}
+  .view.active{display:block}
+  .controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+  input,select,textarea,button.btn{background:var(--panel2);border:1px solid var(--border);color:var(--fg);border-radius:6px;padding:6px 9px;font:inherit}
+  input::placeholder{color:var(--muted)}
+  button.btn{cursor:pointer}
+  button.btn:hover{border-color:var(--accent)}
+  button.btn.primary{background:var(--accent2);border-color:var(--accent2)}
+  textarea{width:100%;min-height:120px;font-family:var(--mono);resize:vertical}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  @media(max-width:1100px){.grid2,.grid3{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:16px}
+  .card h3{margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--border);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:320px}
+  th{position:sticky;top:0;background:var(--panel2);cursor:pointer;user-select:none;z-index:1}
+  th:hover{color:var(--accent)}
+  tbody tr:hover{background:var(--panel2)}
+  td.mono,.mono{font-family:var(--mono)}
+  .scroll{max-height:62vh;overflow:auto;border:1px solid var(--border);border-radius:8px}
+  .tag{font-size:10px;padding:1px 7px;border-radius:10px;font-weight:600}
+  .tag.ok{background:rgba(63,185,80,.15);color:var(--ok)}
+  .tag.bad{background:rgba(248,81,73,.15);color:var(--bad)}
+  .tag.warn{background:rgba(210,153,34,.15);color:var(--warn)}
+  .tag.muted{background:rgba(139,148,158,.12);color:var(--muted)}
+  tr.ioc td{background:rgba(255,107,107,.10)!important}
+  tr.ioc td:first-child{box-shadow:inset 3px 0 0 var(--ioc)}
+  .num{text-align:right;font-family:var(--mono)}
+  .muted{color:var(--muted)}
+  .ip{color:var(--accent);cursor:pointer}
+  .ip:hover{text-decoration:underline}
+  .legend{font-size:11px;color:var(--muted);margin:4px 0 0}
+  .barrow{display:flex;align-items:center;gap:8px;margin:3px 0}
+  .barrow .lab{font-family:var(--mono);font-size:11px;width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .barrow .track{flex:1;background:var(--panel2);border-radius:3px;height:14px;overflow:hidden}
+  .barrow .fill{height:100%;background:var(--accent2)}
+  .barrow .val{font-family:var(--mono);font-size:11px;width:90px;text-align:right;color:var(--muted)}
+  .footnote{color:var(--muted);font-size:11px;margin-top:8px}
+  .err{color:var(--bad)}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Taegis XDR / FortiGate VPN Analyzer <small>— DFIR artifact triage</small></h1>
+  <span class="pill">100% client-side · no network</span>
+  <span class="pill" id="srcpill">no file loaded</span>
+  <span style="flex:1"></span>
+  <button class="btn" id="loadBtn">Load CSV…</button>
+  <input type="file" id="file" accept=".csv,text/csv" class="hidden">
+</header>
+
+<section id="drop">
+  <p style="font-size:15px;margin:0 0 6px"><b>Drop a Taegis XDR export CSV here</b> or click to browse</p>
+  <p class="muted" style="margin:0">Built for Secureworks Taegis search exports (252-col unified schema) carrying FortiGate netflow + M365/Entra auth. Columns are matched by name, so any Taegis export works.</p>
+</section>
+
+<div id="app" class="hidden">
+  <div class="bar" id="statbar"></div>
+  <nav>
+    <button data-v="netflow" class="active">Netflow Triage</button>
+    <button data-v="auth">Auth / Logon Timeline</button>
+    <button data-v="ioc">IOC Sweep</button>
+    <button data-v="timeline">Unified Timeline + Export</button>
+  </nav>
+  <main>
+    <!-- NETFLOW -->
+    <section class="view active" id="view-netflow">
+      <div class="grid3">
+        <div class="card"><h3>Top source IPs</h3><div id="nf-topsrc"></div></div>
+        <div class="card"><h3>Top destination IPs</h3><div id="nf-topdst"></div></div>
+        <div class="card"><h3>Top destination ports</h3><div id="nf-topport"></div></div>
+      </div>
+      <div class="controls">
+        <input id="nf-q" placeholder="filter (ip, port, action, geo…)" style="min-width:260px">
+        <select id="nf-action"><option value="">all actions</option></select>
+        <span class="muted" id="nf-count"></span>
+        <span style="flex:1"></span>
+        <button class="btn" data-export="netflow">Export view → CSV</button>
+      </div>
+      <div class="scroll"><table id="nf-table"></table></div>
+      <p class="footnote">Bytes = tx+rx. Click an IP to filter every view to it.</p>
+    </section>
+
+    <!-- AUTH -->
+    <section class="view" id="view-auth">
+      <div class="grid3">
+        <div class="card"><h3>Sign-ins by user</h3><div id="au-topuser"></div></div>
+        <div class="card"><h3>Sign-ins by source IP</h3><div id="au-topip"></div></div>
+        <div class="card"><h3>Result breakdown</h3><div id="au-result"></div></div>
+      </div>
+      <div class="controls">
+        <input id="au-q" placeholder="filter (user, ip, result, event…)" style="min-width:260px">
+        <select id="au-res"><option value="">all results</option></select>
+        <span class="muted" id="au-count"></span>
+        <span style="flex:1"></span>
+        <button class="btn" data-export="auth">Export view → CSV</button>
+      </div>
+      <div class="scroll"><table id="au-table"></table></div>
+      <p class="footnote">Rows where <span class="mono">type</span> = auth or cloudaudit (M365 / Entra sign-in & audit events).</p>
+    </section>
+
+    <!-- IOC -->
+    <section class="view" id="view-ioc">
+      <div class="grid2">
+        <div class="card">
+          <h3>IOC list</h3>
+          <p class="legend">Paste IPs / CIDRs / domains (one per line, or comma/space separated). Lines starting with # are ignored. Or drop a .txt IOC file below.</p>
+          <textarea id="ioc-input" placeholder="45.84.59.21&#10;193.187.151.190&#10;evil.example.com&#10;# comments allowed"></textarea>
+          <div class="controls" style="margin-top:8px">
+            <button class="btn primary" id="ioc-run">Sweep</button>
+            <button class="btn" id="ioc-loadfile">Load IOC file…</button>
+            <input type="file" id="ioc-file" accept=".txt,.csv" class="hidden">
+            <span class="muted" id="ioc-parsed"></span>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Sweep result</h3>
+          <div id="ioc-summary" class="muted">No sweep run yet.</div>
+        </div>
+      </div>
+      <div class="controls">
+        <span class="muted" id="ioc-count"></span>
+        <span style="flex:1"></span>
+        <button class="btn" data-export="ioc">Export hits → CSV</button>
+      </div>
+      <div class="scroll"><table id="ioc-table"></table></div>
+    </section>
+
+    <!-- TIMELINE -->
+    <section class="view" id="view-timeline">
+      <div class="controls">
+        <input id="tl-q" placeholder="free-text filter across all fields…" style="min-width:300px">
+        <select id="tl-type"><option value="">all types</option></select>
+        <input id="tl-from" type="datetime-local">
+        <span class="muted">→</span>
+        <input id="tl-to" type="datetime-local">
+        <button class="btn" id="tl-clear">clear</button>
+        <span class="muted" id="tl-count"></span>
+        <span style="flex:1"></span>
+        <button class="btn" data-export="timeline">Export view → CSV</button>
+        <button class="btn" id="tl-copy">Copy for case notes</button>
+      </div>
+      <div class="scroll"><table id="tl-table"></table></div>
+      <p class="footnote">All event types merged on one timeline (UTC). IOC-matched rows are highlighted if a sweep has been run.</p>
+    </section>
+  </main>
+</div>
+
+<script>
+"use strict";
+
+/* ---------- robust RFC-4180 CSV parser (handles embedded JSON, commas, "" escapes, newlines) ---------- */
+function parseCSV(text){
+  const rows=[]; let row=[], field='', i=0, q=false, n=text.length;
+  if(text.charCodeAt(0)===0xFEFF){i=1;} // strip BOM
+  while(i<n){
+    const c=text[i];
+    if(q){
+      if(c==='"'){
+        if(text[i+1]==='"'){field+='"';i+=2;continue;}
+        q=false;i++;continue;
+      }
+      field+=c;i++;continue;
+    }
+    if(c==='"'){q=true;i++;continue;}
+    if(c===','){row.push(field);field='';i++;continue;}
+    if(c==='\r'){i++;continue;}
+    if(c==='\n'){row.push(field);rows.push(row);row=[];field='';i++;continue;}
+    field+=c;i++;
+  }
+  if(field.length||row.length){row.push(field);rows.push(row);}
+  return rows;
+}
+
+/* ---------- state ---------- */
+let HEADER=[], IDX={}, RAW=[], REC=[], IOCS=null;
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+
+function col(...names){ // first header index that exists
+  for(const nm of names){ if(nm in IDX) return IDX[nm]; }
+  return -1;
+}
+function val(raw, idx){ return idx>=0 && idx<raw.length ? raw[idx] : ''; }
+function firstNonEmpty(raw, idxs){ for(const ix of idxs){ const v=val(raw,ix); if(v && v.trim()) return v.trim(); } return ''; }
+
+/* map header-name columns once */
+let C={};
+function buildColMap(){
+  C={
+    type: col('type'),
+    action: [col('action'),col('flow_action')].filter(x=>x>=0),
+    action_result: col('action_result','status','action_taken'),
+    src_ip: col('source_address'),
+    src_port: col('source_port'),
+    dst_ip: col('destination_address'),
+    dst_port: col('destination_port'),
+    nat: col('source_nat_address'),
+    proto: col('protocol','transport'),
+    tx_b: col('tx_byte_count'), rx_b: col('rx_byte_count'),
+    tx_p: col('tx_packet_count'), rx_p: col('rx_packet_count'),
+    app: col('application_name'),
+    direction: col('direction'),
+    mfa_res: col('mfa_result'), mfa_used: col('mfa_used'),
+    event: col('event_name','event_type'),
+    vendor: col('vendor'), sensor: col('sensor_type'),
+    device: col('sensor_id','device_location'),
+    src_geo: col('src_ipgeo_summary','source_ipgeo_summary'),
+    dst_geo: col('dest_ipgeo_summary'),
+    domain_extra: col('additional_domain_names'),
+    src_extra: col('additional_source_addresses'),
+    dst_extra: col('additional_destination_addresses'),
+    user: [col('user_name'),col('target_user_name'),col('source_user_name'),col('extra_userprincipalname'),col('source_user_id'),col('user_id')].filter(x=>x>=0),
+    domain: [col('domain_name'),col('source_domain_name'),col('target_domain_name'),col('dns_name')].filter(x=>x>=0),
+    host: [col('source_hostname'),col('hostname'),col('target_hostname')].filter(x=>x>=0),
+    auth_res: col('auth_error_code_description'),
+    auth_proto: col('auth_protocol'),
+    ts: [col('event_time_usec'),col('start_timestamp_usec'),col('created_time_usec'),col('first_event_time_usec'),col('ingest_time_usec')].filter(x=>x>=0)
+  };
+}
+
+function usecToDate(raw){
+  for(const ix of C.ts){
+    let v=val(raw,ix); if(!v) continue; v=v.trim(); if(!v) continue;
+    // Taegis exports these columns as ISO-8601 strings despite the _usec name…
+    if(/^\d{4}-\d{2}-\d{2}T/.test(v)){ const d=new Date(v); if(!isNaN(d)) return d; }
+    // …but tolerate raw epoch microseconds too (13-19 digits).
+    if(/^\d{13,19}$/.test(v)) return new Date(Number(v)/1000);
+  }
+  return null;
+}
+
+function num(v){ const x=parseFloat(v); return isFinite(x)?x:0; }
+const PROTO={'1':'ICMP','6':'TCP','17':'UDP','47':'GRE','50':'ESP','58':'ICMPv6'};
+function protoName(v){ return PROTO[v]?PROTO[v]+'('+v+')':v; }
+
+/* normalize one raw row -> record */
+function normalize(raw){
+  const d=usecToDate(raw);
+  const t=(val(raw,C.type)||'').trim();
+  const r={
+    raw,
+    ts:d, tsv:d?d.getTime():0,
+    type:t,
+    cat: (t==='netflow')?'netflow' : (t==='auth'||t==='cloudaudit')?'auth' : 'other',
+    action:firstNonEmpty(raw,C.action),
+    result:(val(raw,C.action_result)||'').trim(),
+    src:(val(raw,C.src_ip)||'').trim(),
+    sport:(val(raw,C.src_port)||'').trim(),
+    dst:(val(raw,C.dst_ip)||'').trim(),
+    dport:(val(raw,C.dst_port)||'').trim(),
+    nat:(val(raw,C.nat)||'').trim(),
+    proto:protoName((val(raw,C.proto)||'').trim()),
+    bytes:num(val(raw,C.tx_b))+num(val(raw,C.rx_b)),
+    pkts:num(val(raw,C.tx_p))+num(val(raw,C.rx_p)),
+    app:(val(raw,C.app)||'').trim(),
+    dir:(val(raw,C.direction)||'').trim(),
+    mfa:(val(raw,C.mfa_res)||(val(raw,C.mfa_used)==='true'?'MFA_USED':'')||'').trim(),
+    event:(val(raw,C.event)||'').trim(),
+    vendor:(val(raw,C.vendor)||'').trim(),
+    sensor:(val(raw,C.sensor)||'').trim(),
+    device:(val(raw,C.device)||'').trim(),
+    user:firstNonEmpty(raw,C.user),
+    domain:firstNonEmpty(raw,C.domain),
+    host:firstNonEmpty(raw,C.host),
+    sgeo:(val(raw,C.src_geo)||'').trim(),
+    dgeo:(val(raw,C.dst_geo)||'').trim(),
+    authres:(val(raw,C.auth_res)||'').trim(),
+  };
+  return r;
+}
+
+/* ---------- helpers ---------- */
+function fmtTs(d){ if(!d) return ''; return d.toISOString().replace('T',' ').replace('.000Z','Z').replace('Z',' UTC'); }
+function fmtBytes(n){ if(!n) return ''; const u=['B','KB','MB','GB','TB']; let i=0; while(n>=1024&&i<u.length-1){n/=1024;i++;} return n.toFixed(i?1:0)+' '+u[i]; }
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }
+function resultTag(r){
+  const s=(r.result||r.action||'').toUpperCase();
+  if(/SUCC|ALLOW|ACCEPT|PASS/.test(s)) return '<span class="tag ok">'+esc(s||'OK')+'</span>';
+  if(/FAIL|BLOCK|DENY|DROP|REJECT/.test(s)) return '<span class="tag bad">'+esc(s)+'</span>';
+  if(s) return '<span class="tag warn">'+esc(s)+'</span>';
+  return '';
+}
+
+/* ---------- top-N bar widget ---------- */
+function topN(records, keyFn, n=10, fmt=String){
+  const m=new Map();
+  for(const r of records){ const k=keyFn(r); if(!k) continue; m.set(k,(m.get(k)||0)+1); }
+  const arr=[...m.entries()].sort((a,b)=>b[1]-a[1]).slice(0,n);
+  const max=arr.length?arr[0][1]:1;
+  return arr.map(([k,v])=>
+    `<div class="barrow"><span class="lab" title="${esc(k)}">${esc(k)}</span>`+
+    `<span class="track"><span class="fill" style="width:${(v/max*100).toFixed(1)}%"></span></span>`+
+    `<span class="val">${fmt(v)}</span></div>`).join('') || '<span class="muted">none</span>';
+}
+function topNBytes(records, keyFn, n=10){
+  const m=new Map();
+  for(const r of records){ const k=keyFn(r); if(!k) continue; m.set(k,(m.get(k)||0)+r.bytes); }
+  const arr=[...m.entries()].sort((a,b)=>b[1]-a[1]).slice(0,n);
+  const max=arr.length?arr[0][1]:1;
+  return arr.map(([k,v])=>
+    `<div class="barrow"><span class="lab" title="${esc(k)}">${esc(k)}</span>`+
+    `<span class="track"><span class="fill" style="width:${(v/max*100).toFixed(1)}%"></span></span>`+
+    `<span class="val">${fmtBytes(v)}</span></div>`).join('') || '<span class="muted">none</span>';
+}
+
+/* ---------- sortable table renderer ---------- */
+const MAXROWS=4000;
+function renderTable(el, cols, rows, sortState){
+  let data=rows;
+  if(sortState && sortState.key!=null){
+    const k=sortState.key, dir=sortState.dir;
+    data=[...rows].sort((a,b)=>{
+      let x=cols[k].sort(a), y=cols[k].sort(b);
+      if(typeof x==='number'&&typeof y==='number') return (x-y)*dir;
+      x=String(x); y=String(y); return x<y?-dir:x>y?dir:0;
+    });
+  }
+  const shown=data.slice(0,MAXROWS);
+  let h='<thead><tr>'+cols.map((c,i)=>{
+    const arrow=sortState&&sortState.key===i?(sortState.dir>0?' ▲':' ▼'):'';
+    return `<th data-k="${i}">${esc(c.h)}${arrow}</th>`;
+  }).join('')+'</tr></thead><tbody>';
+  for(const r of shown){
+    h+='<tr'+(IOCS&&r.__ioc?' class="ioc"':'')+'>'+cols.map(c=>c.td(r)).join('')+'</tr>';
+  }
+  h+='</tbody>';
+  el.innerHTML=h;
+  el.querySelectorAll('th').forEach(th=>th.onclick=()=>{
+    const k=+th.dataset.k;
+    if(sortState.key===k) sortState.dir*=-1; else {sortState.key=k;sortState.dir=1;}
+    renderTable(el,cols,rows,sortState);
+  });
+  return {total:data.length, shown:shown.length};
+}
+
+/* IP click -> push into filters */
+function wireIPs(){ /* delegation handled per render via class .ip */ }
+document.addEventListener('click',e=>{
+  const ip=e.target.closest('.ip'); if(!ip) return;
+  const v=ip.textContent.trim();
+  $('#nf-q').value=v; $('#au-q').value=v; $('#tl-q').value=v;
+  drawNetflow(); drawAuth(); drawTimeline();
+});
+
+/* ---------- views ---------- */
+const sortNF={key:0,dir:-1}, sortAU={key:0,dir:-1}, sortIOC={key:0,dir:-1}, sortTL={key:0,dir:-1};
+
+function ipCell(v){ return v?`<td class="mono ip">${esc(v)}</td>`:'<td></td>'; }
+
+function drawNetflow(){
+  const all=REC.filter(r=>r.cat==='netflow');
+  $('#nf-topsrc').innerHTML=topN(all,r=>r.src);
+  $('#nf-topdst').innerHTML=topNBytes(all,r=>r.dst);
+  $('#nf-topport').innerHTML=topN(all,r=>r.dport);
+  // action filter options
+  const sel=$('#nf-action');
+  if(sel.options.length<=1){ [...new Set(all.map(r=>r.action).filter(Boolean))].sort().forEach(a=>sel.add(new Option(a,a))); }
+  const q=$('#nf-q').value.toLowerCase().trim(), af=sel.value;
+  const rows=all.filter(r=>(!af||r.action===af)&&(!q||[r.src,r.sport,r.dst,r.dport,r.proto,r.action,r.sgeo,r.dgeo].join(' ').toLowerCase().includes(q)));
+  const cols=[
+    {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
+    {h:'Action',sort:r=>r.action,td:r=>`<td>${resultTag(r)}</td>`},
+    {h:'Source',sort:r=>r.src,td:r=>ipCell(r.src)},
+    {h:'sPort',sort:r=>+r.sport||0,td:r=>`<td class="mono">${esc(r.sport)}</td>`},
+    {h:'Destination',sort:r=>r.dst,td:r=>ipCell(r.dst)},
+    {h:'dPort',sort:r=>+r.dport||0,td:r=>`<td class="mono">${esc(r.dport)}</td>`},
+    {h:'Proto',sort:r=>r.proto,td:r=>`<td class="mono">${esc(r.proto)}</td>`},
+    {h:'Bytes',sort:r=>r.bytes,td:r=>`<td class="num">${esc(fmtBytes(r.bytes))}</td>`},
+    {h:'Application',sort:r=>r.app,td:r=>`<td title="${esc(r.app)}">${esc(r.app)}</td>`},
+    {h:'Dst geo',sort:r=>r.dgeo,td:r=>`<td title="${esc(r.dgeo)}">${esc(r.dgeo)}</td>`},
+    {h:'Device',sort:r=>r.device,td:r=>`<td class="mono">${esc(r.device)}</td>`},
+  ];
+  const {total,shown}=renderTable($('#nf-table'),cols,rows,sortNF);
+  $('#nf-count').textContent=`${total.toLocaleString()} flows`+(shown<total?` (showing ${shown.toLocaleString()})`:'');
+}
+
+function drawAuth(){
+  const all=REC.filter(r=>r.cat==='auth');
+  $('#au-topuser').innerHTML=topN(all,r=>r.user);
+  $('#au-topip').innerHTML=topN(all,r=>r.src||r.dst);
+  $('#au-result').innerHTML=topN(all,r=>r.result||r.action||r.authres);
+  const sel=$('#au-res');
+  if(sel.options.length<=1){ [...new Set(all.map(r=>r.result||r.action).filter(Boolean))].sort().forEach(a=>sel.add(new Option(a,a))); }
+  const q=$('#au-q').value.toLowerCase().trim(), rf=sel.value;
+  const rows=all.filter(r=>(!rf||(r.result||r.action)===rf)&&(!q||[r.user,r.src,r.dst,r.result,r.action,r.event,r.domain,r.authres,r.type].join(' ').toLowerCase().includes(q)));
+  const cols=[
+    {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
+    {h:'Type',sort:r=>r.type,td:r=>`<td><span class="tag muted">${esc(r.type)}</span></td>`},
+    {h:'Event',sort:r=>r.event||r.action,td:r=>`<td title="${esc(r.event||r.action)}">${esc(r.event||r.action)}</td>`},
+    {h:'User',sort:r=>r.user,td:r=>`<td class="mono">${esc(r.user)}</td>`},
+    {h:'Source IP',sort:r=>r.src,td:r=>ipCell(r.src)},
+    {h:'Result',sort:r=>r.result||r.action,td:r=>`<td>${resultTag(r)}${r.authres&&r.authres!=='Other.'?' <span class="muted">'+esc(r.authres)+'</span>':''}</td>`},
+    {h:'MFA',sort:r=>r.mfa,td:r=>`<td>${r.mfa?('<span class="tag '+(/SUCCESS|USED/.test(r.mfa)?'ok':/FAIL|DENY/.test(r.mfa)?'bad':'muted')+'">'+esc(r.mfa)+'</span>'):''}</td>`},
+    {h:'Application',sort:r=>r.app,td:r=>`<td title="${esc(r.app)}">${esc(r.app)}</td>`},
+    {h:'Geo',sort:r=>r.sgeo,td:r=>`<td title="${esc(r.sgeo)}">${esc(r.sgeo)}</td>`},
+  ];
+  const {total,shown}=renderTable($('#au-table'),cols,rows,sortAU);
+  $('#au-count').textContent=`${total.toLocaleString()} auth events`+(shown<total?` (showing ${shown.toLocaleString()})`:'');
+}
+
+/* ---------- IOC sweep ---------- */
+function ipToInt(ip){ const p=ip.split('.'); if(p.length!==4) return null; let n=0; for(const o of p){const x=+o; if(!(x>=0&&x<=255))return null; n=n*256+x;} return n>>>0; }
+function parseIOCs(text){
+  const ips=new Set(), cidrs=[], doms=new Set();
+  text.split(/[\s,;]+/).forEach(tok=>{
+    tok=tok.trim(); if(!tok||tok.startsWith('#')) return;
+    let m;
+    if(m=tok.match(/^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/)){
+      const base=ipToInt(m[1]); const bits=+m[2];
+      if(base!=null&&bits>=0&&bits<=32){ const mask=bits===0?0:(~0<<(32-bits))>>>0; cidrs.push([base&mask,mask]); }
+    } else if(/^\d{1,3}(?:\.\d{1,3}){3}$/.test(tok)){ ips.add(tok); }
+    else { doms.add(tok.toLowerCase().replace(/^\*\./,'')); }
+  });
+  return {ips,cidrs,doms};
+}
+function iocHit(r){
+  if(!IOCS) return null;
+  const ipset=[r.src,r.dst];
+  for(const ip of ipset){
+    if(!ip) continue;
+    if(IOCS.ips.has(ip)) return ip;
+    const n=ipToInt(ip);
+    if(n!=null) for(const [base,mask] of IOCS.cidrs){ if((n&mask)===base) return ip; }
+  }
+  const dl=(r.domain||'').toLowerCase();
+  if(dl) for(const d of IOCS.doms){ if(dl===d||dl.endsWith('.'+d)) return r.domain; }
+  return null;
+}
+function runSweep(){
+  const parsed=parseIOCs($('#ioc-input').value);
+  IOCS=parsed;
+  $('#ioc-parsed').textContent=`${parsed.ips.size} IPs, ${parsed.cidrs.length} CIDRs, ${parsed.doms.size} domains`;
+  let hits=0;
+  for(const r of REC){ const h=iocHit(r); r.__ioc=h||null; if(h) hits++; }
+  const matchedIPs=new Set(REC.filter(r=>r.__ioc).map(r=>r.__ioc));
+  $('#ioc-summary').innerHTML = hits
+    ? `<div style="font-size:22px;font-weight:700;color:var(--ioc)">${hits.toLocaleString()} matching events</div>`+
+      `<div class="muted">across ${matchedIPs.size} distinct indicator value(s)</div>`+
+      `<div style="margin-top:6px">${[...matchedIPs].slice(0,20).map(x=>'<span class="tag bad" style="margin:2px">'+esc(x)+'</span>').join('')}</div>`
+    : '<span class="ok tag">No IOC matches in this dataset.</span>';
+  drawIOC(); drawTimeline();
+}
+function drawIOC(){
+  const rows=REC.filter(r=>r.__ioc);
+  const cols=[
+    {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
+    {h:'IOC',sort:r=>r.__ioc,td:r=>`<td class="mono" style="color:var(--ioc)">${esc(r.__ioc)}</td>`},
+    {h:'Type',sort:r=>r.type,td:r=>`<td>${esc(r.type)}</td>`},
+    {h:'Source',sort:r=>r.src,td:r=>ipCell(r.src)},
+    {h:'Destination',sort:r=>r.dst,td:r=>ipCell(r.dst)},
+    {h:'dPort',sort:r=>+r.dport||0,td:r=>`<td class="mono">${esc(r.dport)}</td>`},
+    {h:'Action',sort:r=>r.action,td:r=>`<td>${resultTag(r)}</td>`},
+    {h:'User',sort:r=>r.user,td:r=>`<td class="mono">${esc(r.user)}</td>`},
+    {h:'Bytes',sort:r=>r.bytes,td:r=>`<td class="num">${esc(fmtBytes(r.bytes))}</td>`},
+  ];
+  const {total}=renderTable($('#ioc-table'),cols,rows,sortIOC);
+  $('#ioc-count').textContent=`${total.toLocaleString()} IOC hits`;
+}
+
+/* ---------- unified timeline ---------- */
+function drawTimeline(){
+  const sel=$('#tl-type');
+  if(sel.options.length<=1){ [...new Set(REC.map(r=>r.type).filter(Boolean))].sort().forEach(t=>sel.add(new Option(t,t))); }
+  const q=$('#tl-q').value.toLowerCase().trim(), tf=sel.value;
+  const from=$('#tl-from').value?new Date($('#tl-from').value).getTime():null;
+  const to=$('#tl-to').value?new Date($('#tl-to').value).getTime():null;
+  const rows=REC.filter(r=>{
+    if(tf&&r.type!==tf) return false;
+    if(from&&r.tsv<from) return false;
+    if(to&&r.tsv>to) return false;
+    if(q){ const blob=[r.type,r.action,r.result,r.src,r.sport,r.dst,r.dport,r.proto,r.user,r.domain,r.event,r.host,r.device,r.sgeo,r.dgeo].join(' ').toLowerCase(); if(!blob.includes(q)) return false; }
+    return true;
+  });
+  const cols=[
+    {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
+    {h:'Type',sort:r=>r.type,td:r=>`<td><span class="tag muted">${esc(r.type)}</span></td>`},
+    {h:'Action',sort:r=>r.action,td:r=>`<td>${resultTag(r)}</td>`},
+    {h:'Source',sort:r=>r.src,td:r=>ipCell(r.src)},
+    {h:'Destination',sort:r=>r.dst,td:r=>ipCell(r.dst)},
+    {h:'dPort',sort:r=>+r.dport||0,td:r=>`<td class="mono">${esc(r.dport)}</td>`},
+    {h:'User',sort:r=>r.user,td:r=>`<td class="mono">${esc(r.user)}</td>`},
+    {h:'Event / domain',sort:r=>r.event||r.domain,td:r=>`<td title="${esc(r.event||r.domain)}">${esc(r.event||r.domain)}</td>`},
+    {h:'Bytes',sort:r=>r.bytes,td:r=>`<td class="num">${esc(fmtBytes(r.bytes))}</td>`},
+  ];
+  const {total,shown}=renderTable($('#tl-table'),cols,rows,sortTL);
+  $('#tl-count').textContent=`${total.toLocaleString()} events`+(shown<total?` (showing ${shown.toLocaleString()})`:'');
+  window.__tlRows=rows;
+}
+
+/* ---------- export ---------- */
+function currentRows(view){
+  if(view==='netflow'){ drawNetflow(); return collect('#nf-table'); }
+  if(view==='auth'){ drawAuth(); return collect('#au-table'); }
+  if(view==='ioc'){ return REC.filter(r=>r.__ioc); }
+  if(view==='timeline'){ drawTimeline(); return window.__tlRows||[]; }
+  return [];
+}
+function collect(sel){ // re-derive filtered rows for export by reading current filter inputs
+  if(sel==='#nf-table'){ const all=REC.filter(r=>r.cat==='netflow'); const q=$('#nf-q').value.toLowerCase().trim(),af=$('#nf-action').value;
+    return all.filter(r=>(!af||r.action===af)&&(!q||[r.src,r.sport,r.dst,r.dport,r.proto,r.action,r.sgeo,r.dgeo].join(' ').toLowerCase().includes(q))); }
+  if(sel==='#au-table'){ const all=REC.filter(r=>r.cat==='auth'); const q=$('#au-q').value.toLowerCase().trim(),rf=$('#au-res').value;
+    return all.filter(r=>(!rf||(r.result||r.action)===rf)&&(!q||[r.user,r.src,r.dst,r.result,r.action,r.event,r.domain,r.authres,r.type].join(' ').toLowerCase().includes(q))); }
+  return [];
+}
+const EXPORT_FIELDS=['ts','type','action','result','src','sport','dst','dport','proto','bytes','pkts','user','domain','host','event','device','sgeo','dgeo','__ioc'];
+function csvCell(v){ v=(v==null?'':String(v)); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; }
+function exportCSV(view){
+  const rows=currentRows(view);
+  const head=['time_utc',...EXPORT_FIELDS.slice(1)].join(',');
+  const body=rows.map(r=>[fmtTs(r.ts),r.type,r.action,r.result,r.src,r.sport,r.dst,r.dport,r.proto,r.bytes,r.pkts,r.user,r.domain,r.host,r.event,r.device,r.sgeo,r.dgeo,r.__ioc||''].map(csvCell).join(',')).join('\n');
+  download(`taegis-${view}-export.csv`, head+'\n'+body);
+}
+function download(name,text){
+  const b=new Blob([text],{type:'text/csv'}); const u=URL.createObjectURL(b);
+  const a=document.createElement('a'); a.href=u; a.download=name; a.click(); URL.revokeObjectURL(u);
+}
+function copyNotes(){
+  const rows=(window.__tlRows||[]).slice(0,500);
+  const lines=rows.map(r=>`${fmtTs(r.ts)} | ${r.type} | ${r.action||r.result} | ${r.src||''}${r.sport?':'+r.sport:''} -> ${r.dst||''}${r.dport?':'+r.dport:''} | ${r.user||''} ${r.domain||''} ${r.event||''}`.trim());
+  navigator.clipboard.writeText(lines.join('\n')).then(()=>{
+    $('#tl-copy').textContent='Copied '+rows.length+' rows ✓'; setTimeout(()=>$('#tl-copy').textContent='Copy for case notes',1800);
+  });
+}
+
+/* ---------- stat bar ---------- */
+function buildStats(){
+  const total=REC.length;
+  const byCat={netflow:0,auth:0,other:0}; const vendors=new Set(); const devices=new Set();
+  let min=Infinity,max=-Infinity;
+  for(const r of REC){ byCat[r.cat]++; const v=r.vendor||r.sensor; if(v)vendors.add(v); if(r.cat==='netflow'&&r.device)devices.add(r.device);
+    if(r.tsv){ if(r.tsv<min)min=r.tsv; if(r.tsv>max)max=r.tsv; } }
+  const span=(min<max)?`${fmtTs(new Date(min))} → ${fmtTs(new Date(max))}`:'—';
+  $('#statbar').innerHTML=
+    stat(total.toLocaleString(),'events')+
+    stat(byCat.netflow.toLocaleString(),'netflow')+
+    stat(byCat.auth.toLocaleString(),'auth/cloud')+
+    stat(byCat.other.toLocaleString(),'other')+
+    stat([...vendors].slice(0,3).join(', ')||'—','source type(s)')+
+    stat([...devices].slice(0,2).join(', ')||'—','device(s)')+
+    `<div class="stat" style="flex:1;min-width:280px"><div class="n" style="font-size:12px">${esc(span)}</div><div class="l">time range (UTC)</div></div>`;
+}
+function stat(n,l){ return `<div class="stat"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`; }
+
+/* ---------- load pipeline ---------- */
+function ingest(text){
+  RAW=parseCSV(text);
+  if(!RAW.length){ alert('Empty / unparseable file'); return; }
+  HEADER=RAW[0]; IDX={}; HEADER.forEach((h,i)=>{ if(!(h in IDX)) IDX[h.trim()]=i; });
+  buildColMap();
+  REC=[]; for(let i=1;i<RAW.length;i++){ if(RAW[i].length<2) continue; REC.push(normalize(RAW[i])); }
+  $('#drop').classList.add('hidden'); $('#app').classList.remove('hidden');
+  $('#srcpill').textContent=`${REC.length.toLocaleString()} events · ${HEADER.length} cols`;
+  buildStats(); drawNetflow(); drawAuth(); drawIOC(); drawTimeline();
+}
+function readFile(f){ const r=new FileReader(); r.onload=()=>ingest(r.result); r.readAsText(f); $('#srcpill').textContent='loading '+f.name+'…'; }
+
+/* ---------- wiring ---------- */
+$('#loadBtn').onclick=()=>$('#file').click();
+$('#drop').onclick=()=>$('#file').click();
+$('#file').onchange=e=>{ if(e.target.files[0]) readFile(e.target.files[0]); };
+const drop=$('#drop');
+['dragenter','dragover'].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('hot');}));
+['dragleave','drop'].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault();if(ev==='drop'){const f=e.dataTransfer.files[0]; if(f)readFile(f);} drop.classList.remove('hot');}));
+
+$$('nav button').forEach(b=>b.onclick=()=>{
+  $$('nav button').forEach(x=>x.classList.remove('active')); b.classList.add('active');
+  $$('.view').forEach(v=>v.classList.remove('active')); $('#view-'+b.dataset.v).classList.add('active');
+});
+$('#nf-q').oninput=drawNetflow; $('#nf-action').onchange=drawNetflow;
+$('#au-q').oninput=drawAuth; $('#au-res').onchange=drawAuth;
+$('#tl-q').oninput=drawTimeline; $('#tl-type').onchange=drawTimeline; $('#tl-from').onchange=drawTimeline; $('#tl-to').onchange=drawTimeline;
+$('#tl-clear').onclick=()=>{ $('#tl-q').value='';$('#tl-type').value='';$('#tl-from').value='';$('#tl-to').value=''; drawTimeline(); };
+$('#tl-copy').onclick=copyNotes;
+$('#ioc-run').onclick=runSweep;
+$('#ioc-loadfile').onclick=()=>$('#ioc-file').click();
+$('#ioc-file').onchange=e=>{ const f=e.target.files[0]; if(!f)return; const r=new FileReader(); r.onload=()=>{ $('#ioc-input').value=r.result; runSweep(); }; r.readAsText(f); };
+$$('[data-export]').forEach(b=>b.onclick=()=>exportCSV(b.dataset.export));
+</script>
+</body>
+</html>

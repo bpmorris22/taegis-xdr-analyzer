@@ -1,0 +1,23 @@
+# ---------------------------------------------------------------------------
+# Evidence / case-data guardrail — NEVER commit forensic artifacts to this repo.
+# This tool is generic; the data it analyzes is sensitive client/case material.
+# ---------------------------------------------------------------------------
+*.csv
+*.tsv
+*.json
+*.evtx
+*.evt
+*.log
+*.pcap
+*.pcapng
+*.zip
+*.gz
+*.7z
+
+# OS / editor noise
+Thumbs.db
+desktop.ini
+.DS_Store
+*.swp
+.vscode/
+.idea/
