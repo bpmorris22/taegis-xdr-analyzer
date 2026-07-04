@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Taegis NetFlow Analyzer v0.4</title>
+<title>Taegis NetFlow Analyzer v0.5</title>
 <style>
   :root{
     --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#30363d;
@@ -39,6 +39,11 @@
   .chip{background:var(--panel2);border:1px solid var(--border);color:var(--muted);border-radius:14px;padding:3px 11px;font-size:12px;cursor:pointer}
   .chip:hover{border-color:var(--accent);color:var(--fg)}
   .chip.on{background:var(--accent2);border-color:var(--accent2);color:#fff}
+  .chip.dir{border-style:dashed;margin-left:8px}
+  .chip.dir.on{background:rgba(210,153,34,.2);border-color:var(--warn);color:var(--warn);border-style:solid}
+  .chip-in{background:var(--panel2);border:1px solid var(--border);color:var(--fg);border-radius:14px;padding:3px 11px;font-size:12px;width:150px;font-family:var(--mono)}
+  .chip-in::placeholder{color:var(--muted);font-family:inherit}
+  .chip-in.on{border-color:var(--accent2)}
   input,select,textarea,button.btn{background:var(--panel2);border:1px solid var(--border);color:var(--fg);border-radius:6px;padding:6px 9px;font:inherit}
   input::placeholder{color:var(--muted)}
   button.btn{cursor:pointer}
@@ -81,7 +86,7 @@
 </head>
 <body>
 <header>
-  <h1>Taegis NetFlow Analyzer <small>v0.4 · Taegis XDR / FortiGate triage</small></h1>
+  <h1>Taegis NetFlow Analyzer <small>v0.5 · Taegis XDR / FortiGate triage</small></h1>
   <span class="pill">100% client-side · no network</span>
   <span class="pill" id="fname">no file loaded</span>
   <span class="pill" id="srcpill"></span>
@@ -202,6 +207,7 @@
 
     <!-- TIMELINE -->
     <section class="view" id="view-timeline">
+      <div class="chips" id="tl-svc"></div>
       <div class="controls">
         <input id="tl-q" placeholder="free-text filter across all fields…" style="min-width:300px">
         <select id="tl-type"><option value="">all types</option></select>
@@ -212,7 +218,7 @@
         <button class="btn" id="tl-copy">Copy for case notes</button>
       </div>
       <div class="scroll"><table id="tl-table"></table></div>
-      <p class="footnote">All event types merged on one timeline (UTC). IOC-matched rows are highlighted if a sweep has been run.</p>
+      <p class="footnote">All event types merged on one timeline (UTC). IOC-matched rows are highlighted if a sweep has been run. Note: while a service filter is active, events without ports (auth / cloudaudit) are hidden.</p>
     </section>
   </main>
   <footer style="padding:10px 16px;border-top:1px solid var(--border);color:var(--muted);font-size:11px">
@@ -247,7 +253,7 @@ function parseCSV(text){
 }
 
 /* ---------- state ---------- */
-const TOOL='Taegis NetFlow Analyzer', VERSION='v0.4';
+const TOOL='Taegis NetFlow Analyzer', VERSION='v0.5';
 let HEADER=[], IDX={}, RAW=[], REC=[], IOCS=null, FILENAME='', DATAMIN=null, DATAMAX=null;
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 
@@ -292,11 +298,33 @@ const SVC=[
   {k:'RPC',ports:[135]},
   {k:'SQL',ports:[1433,3306,5432,1521]},
 ];
-function svcPorts(active){ const s=new Set(); for(const g of SVC) if(active.has(g.k)) for(const p of g.ports) s.add(p); return s; }
-function svcOK(r,active,ap){ if(!active.size) return true; return ap.has(+r.sport)||ap.has(+r.dport); }
-function renderChips(el,active,redraw){
-  el.innerHTML='<span class="lbl">service</span>'+SVC.map(s=>`<button class="chip${active.has(s.k)?' on':''}" data-k="${s.k}" title="ports: ${s.ports.join(', ')}">${esc(s.k)}</button>`).join('');
-  el.querySelectorAll('.chip').forEach(b=>b.onclick=()=>{ const k=b.dataset.k; active.has(k)?active.delete(k):active.add(k); renderChips(el,active,redraw); redraw(); });
+function mkSvc(){ return {chips:new Set(), custom:new Set(), dstOnly:false}; }
+function resetSvc(st){ st.chips.clear(); st.custom.clear(); st.dstOnly=false; }
+function svcPorts(st){ const s=new Set(st.custom); for(const g of SVC) if(st.chips.has(g.k)) for(const p of g.ports) s.add(p); return s; }
+function svcOK(r,st,ap){
+  if(!ap.size) return true;                 // no service filter active
+  if(ap.has(+r.dport)) return true;         // connection TO a filtered service
+  if(st.dstOnly) return false;              // strict mode: destination port only
+  return ap.has(+r.sport);
+}
+function parsePorts(text){
+  const s=new Set();
+  text.split(/[\s,;]+/).forEach(t=>{ const p=+t; if(Number.isInteger(p)&&p>=1&&p<=65535) s.add(p); });
+  return s;
+}
+function renderChips(el,st,redraw){
+  el.innerHTML='<span class="lbl">service</span>'
+    +SVC.map(s=>`<button class="chip${st.chips.has(s.k)?' on':''}" data-k="${s.k}" title="ports: ${s.ports.join(', ')}">${esc(s.k)}</button>`).join('')
+    +`<input class="chip-in" placeholder="custom ports…" title="comma/space-separated ports, e.g. 4444 8081" value="${esc([...st.custom].join(', '))}">`
+    +`<button class="chip dir${st.dstOnly?' on':''}" title="OFF: match source OR destination port. ON: match destination port only (connections TO the service).">dst only</button>`;
+  el.querySelectorAll('.chip[data-k]').forEach(b=>b.onclick=()=>{
+    const k=b.dataset.k; st.chips.has(k)?st.chips.delete(k):st.chips.add(k);
+    b.classList.toggle('on'); redraw();           // toggle in place; keeps custom-input text intact
+  });
+  const inp=el.querySelector('.chip-in');
+  inp.onchange=()=>{ st.custom=parsePorts(inp.value); inp.classList.toggle('on',st.custom.size>0); redraw(); };
+  inp.onkeydown=e=>{ if(e.key==='Enter') inp.blur(); };
+  el.querySelector('.chip.dir').onclick=e=>{ st.dstOnly=!st.dstOnly; e.target.classList.toggle('on',st.dstOnly); redraw(); };
 }
 
 function col(...names){ // first header index that exists
@@ -467,7 +495,7 @@ document.addEventListener('click',e=>{
 
 /* ---------- views ---------- */
 const sortNF={key:0,dir:-1}, sortRS={key:0,dir:-1}, sortAU={key:0,dir:-1}, sortIOC={key:0,dir:-1}, sortTL={key:0,dir:-1};
-const nfSvc=new Set(), rsSvc=new Set();  // active service chips per view
+const nfSvc=mkSvc(), rsSvc=mkSvc(), tlSvc=mkSvc();  // service-filter state per view (chips + custom ports + dst-only)
 
 function ipCell(v){ return v?`<td class="mono ip">${esc(v)}</td>`:'<td></td>'; }
 
@@ -617,10 +645,11 @@ function drawIOC(){
 function drawTimeline(){
   const sel=$('#tl-type');
   if(sel.options.length<=1){ [...new Set(REC.map(r=>r.type).filter(Boolean))].sort().forEach(t=>sel.add(new Option(t,t))); }
-  const q=$('#tl-q').value.toLowerCase().trim(), tf=sel.value;
+  const q=$('#tl-q').value.toLowerCase().trim(), tf=sel.value, ap=svcPorts(tlSvc);
   const rows=REC.filter(r=>{
     if(tf&&r.type!==tf) return false;
     if(!rowPass(r)) return false;
+    if(!svcOK(r,tlSvc,ap)) return false;
     if(q){ const blob=[r.type,r.action,r.result,r.src,r.sport,r.dst,r.dport,r.proto,r.user,r.domain,r.event,r.host,r.device,r.sgeo,r.dgeo].join(' ').toLowerCase(); if(!blob.includes(q)) return false; }
     return true;
   });
@@ -708,8 +737,8 @@ function ingest(text){
   $('#srcpill').textContent=`${REC.length.toLocaleString()} events · ${HEADER.length} cols`;
   $('#footinfo').textContent=`${TOOL} ${VERSION}  ·  file: ${FILENAME||'(unknown)'}  ·  ${REC.length.toLocaleString()} events, ${HEADER.length} columns`;
   $('#g-from').value=''; $('#g-to').value=''; $('#g-public').checked=false;
-  nfSvc.clear(); rsSvc.clear();
-  renderChips($('#nf-svc'),nfSvc,drawNetflow); renderChips($('#rs-svc'),rsSvc,drawReset);
+  resetSvc(nfSvc); resetSvc(rsSvc); resetSvc(tlSvc);
+  renderChips($('#nf-svc'),nfSvc,drawNetflow); renderChips($('#rs-svc'),rsSvc,drawReset); renderChips($('#tl-svc'),tlSvc,drawTimeline);
   buildStats(); redrawAll();
 }
 function redrawAll(){ updateGInfo(); drawNetflow(); drawReset(); drawAuth(); drawIOC(); drawTimeline(); }
