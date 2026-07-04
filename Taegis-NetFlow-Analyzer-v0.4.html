@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Taegis NetFlow Analyzer v0.3</title>
+<title>Taegis NetFlow Analyzer v0.4</title>
 <style>
   :root{
     --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#30363d;
@@ -34,6 +34,11 @@
   .view{display:none}
   .view.active{display:block}
   .controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+  .chips .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-right:2px}
+  .chip{background:var(--panel2);border:1px solid var(--border);color:var(--muted);border-radius:14px;padding:3px 11px;font-size:12px;cursor:pointer}
+  .chip:hover{border-color:var(--accent);color:var(--fg)}
+  .chip.on{background:var(--accent2);border-color:var(--accent2);color:#fff}
   input,select,textarea,button.btn{background:var(--panel2);border:1px solid var(--border);color:var(--fg);border-radius:6px;padding:6px 9px;font:inherit}
   input::placeholder{color:var(--muted)}
   button.btn{cursor:pointer}
@@ -76,7 +81,7 @@
 </head>
 <body>
 <header>
-  <h1>Taegis NetFlow Analyzer <small>v0.3 · Taegis XDR / FortiGate triage</small></h1>
+  <h1>Taegis NetFlow Analyzer <small>v0.4 · Taegis XDR / FortiGate triage</small></h1>
   <span class="pill">100% client-side · no network</span>
   <span class="pill" id="fname">no file loaded</span>
   <span class="pill" id="srcpill"></span>
@@ -119,6 +124,7 @@
         <div class="card"><h3>Top destination IPs</h3><div id="nf-topdst"></div></div>
         <div class="card"><h3>Top destination ports</h3><div id="nf-topport"></div></div>
       </div>
+      <div class="chips" id="nf-svc"></div>
       <div class="controls">
         <input id="nf-q" placeholder="filter (ip, port, action, geo…)" style="min-width:260px">
         <select id="nf-action"><option value="">all actions</option></select>
@@ -137,6 +143,7 @@
         <div class="card"><h3>Top reset destinations</h3><div id="rs-topdst"></div></div>
         <div class="card"><h3>Reset fan-out by source (distinct dst ports)</h3><div id="rs-fanout"></div></div>
       </div>
+      <div class="chips" id="rs-svc"></div>
       <div class="controls">
         <input id="rs-q" placeholder="filter (ip, port, app…)" style="min-width:260px">
         <select id="rs-dir"><option value="">both directions</option><option value="C2S">client→server resets</option><option value="S2C">server→client resets</option></select>
@@ -240,7 +247,7 @@ function parseCSV(text){
 }
 
 /* ---------- state ---------- */
-const TOOL='Taegis NetFlow Analyzer', VERSION='v0.3';
+const TOOL='Taegis NetFlow Analyzer', VERSION='v0.4';
 let HEADER=[], IDX={}, RAW=[], REC=[], IOCS=null, FILENAME='', DATAMIN=null, DATAMAX=null;
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 
@@ -271,6 +278,26 @@ function isPublicIP(ip){
 function publicOK(r){ if(!$('#g-public').checked) return true; return isPublicIP(r.src)||isPublicIP(r.dst); }
 /* single gate every view applies: time range AND public-IP toggle */
 function rowPass(r){ return timeOK(r) && publicOK(r); }
+
+/* service quick-filter chips (match on source OR destination port) */
+const SVC=[
+  {k:'RDP',ports:[3389]},
+  {k:'WinRM',ports:[5985,5986]},
+  {k:'HTTP/S',ports:[80,443,8080,8443,8000]},
+  {k:'SSH',ports:[22]},
+  {k:'SMB',ports:[445,139]},
+  {k:'DNS',ports:[53]},
+  {k:'LDAP',ports:[389,636,3268,3269]},
+  {k:'Kerberos',ports:[88]},
+  {k:'RPC',ports:[135]},
+  {k:'SQL',ports:[1433,3306,5432,1521]},
+];
+function svcPorts(active){ const s=new Set(); for(const g of SVC) if(active.has(g.k)) for(const p of g.ports) s.add(p); return s; }
+function svcOK(r,active,ap){ if(!active.size) return true; return ap.has(+r.sport)||ap.has(+r.dport); }
+function renderChips(el,active,redraw){
+  el.innerHTML='<span class="lbl">service</span>'+SVC.map(s=>`<button class="chip${active.has(s.k)?' on':''}" data-k="${s.k}" title="ports: ${s.ports.join(', ')}">${esc(s.k)}</button>`).join('');
+  el.querySelectorAll('.chip').forEach(b=>b.onclick=()=>{ const k=b.dataset.k; active.has(k)?active.delete(k):active.add(k); renderChips(el,active,redraw); redraw(); });
+}
 
 function col(...names){ // first header index that exists
   for(const nm of names){ if(nm in IDX) return IDX[nm]; }
@@ -440,6 +467,7 @@ document.addEventListener('click',e=>{
 
 /* ---------- views ---------- */
 const sortNF={key:0,dir:-1}, sortRS={key:0,dir:-1}, sortAU={key:0,dir:-1}, sortIOC={key:0,dir:-1}, sortTL={key:0,dir:-1};
+const nfSvc=new Set(), rsSvc=new Set();  // active service chips per view
 
 function ipCell(v){ return v?`<td class="mono ip">${esc(v)}</td>`:'<td></td>'; }
 
@@ -451,8 +479,8 @@ function drawNetflow(){
   // action filter options
   const sel=$('#nf-action');
   if(sel.options.length<=1){ [...new Set(all.map(r=>r.action).filter(Boolean))].sort().forEach(a=>sel.add(new Option(a,a))); }
-  const q=$('#nf-q').value.toLowerCase().trim(), af=sel.value;
-  const rows=all.filter(r=>(!af||r.action===af)&&(!q||[r.src,r.sport,r.dst,r.dport,r.proto,r.action,r.sgeo,r.dgeo].join(' ').toLowerCase().includes(q)));
+  const q=$('#nf-q').value.toLowerCase().trim(), af=sel.value, ap=svcPorts(nfSvc);
+  const rows=all.filter(r=>svcOK(r,nfSvc,ap)&&(!af||r.action===af)&&(!q||[r.src,r.sport,r.dst,r.dport,r.proto,r.action,r.sgeo,r.dgeo].join(' ').toLowerCase().includes(q)));
   const cols=[
     {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
     {h:'Action',sort:r=>r.action,td:r=>`<td>${resultTag(r)}</td>`},
@@ -483,8 +511,8 @@ function drawReset(){
     `<div class="barrow"><span class="lab" title="${esc(k)}">${esc(k)}</span>`+
     `<span class="track"><span class="fill" style="width:${(v/fmax*100).toFixed(1)}%"></span></span>`+
     `<span class="val">${v} port${v===1?'':'s'}</span></div>`).join('') || '<span class="muted">none</span>';
-  const q=$('#rs-q').value.toLowerCase().trim(), df=$('#rs-dir').value;
-  const rows=all.filter(r=>(!df||resetDir(r)===df)&&(!q||[r.src,r.sport,r.dst,r.dport,r.proto,r.app,r.action,r.dgeo].join(' ').toLowerCase().includes(q)));
+  const q=$('#rs-q').value.toLowerCase().trim(), df=$('#rs-dir').value, ap=svcPorts(rsSvc);
+  const rows=all.filter(r=>svcOK(r,rsSvc,ap)&&(!df||resetDir(r)===df)&&(!q||[r.src,r.sport,r.dst,r.dport,r.proto,r.app,r.action,r.dgeo].join(' ').toLowerCase().includes(q)));
   const cols=[
     {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
     {h:'Reset',sort:r=>r.action,td:r=>`<td><span class="tag bad" title="${esc(r.action)}">${resetDir(r)||'RST'}</span></td>`},
@@ -622,8 +650,8 @@ function currentRows(view){
   return [];
 }
 function collect(sel){ // re-derive filtered rows for export by reading current filter inputs
-  if(sel==='#nf-table'){ const all=REC.filter(r=>r.cat==='netflow'&&rowPass(r)); const q=$('#nf-q').value.toLowerCase().trim(),af=$('#nf-action').value;
-    return all.filter(r=>(!af||r.action===af)&&(!q||[r.src,r.sport,r.dst,r.dport,r.proto,r.action,r.sgeo,r.dgeo].join(' ').toLowerCase().includes(q))); }
+  if(sel==='#nf-table'){ const all=REC.filter(r=>r.cat==='netflow'&&rowPass(r)); const q=$('#nf-q').value.toLowerCase().trim(),af=$('#nf-action').value,ap=svcPorts(nfSvc);
+    return all.filter(r=>svcOK(r,nfSvc,ap)&&(!af||r.action===af)&&(!q||[r.src,r.sport,r.dst,r.dport,r.proto,r.action,r.sgeo,r.dgeo].join(' ').toLowerCase().includes(q))); }
   if(sel==='#au-table'){ const all=REC.filter(r=>r.cat==='auth'&&rowPass(r)); const q=$('#au-q').value.toLowerCase().trim(),rf=$('#au-res').value;
     return all.filter(r=>(!rf||(r.result||r.action)===rf)&&(!q||[r.user,r.src,r.dst,r.result,r.action,r.event,r.domain,r.authres,r.type].join(' ').toLowerCase().includes(q))); }
   return [];
@@ -680,6 +708,8 @@ function ingest(text){
   $('#srcpill').textContent=`${REC.length.toLocaleString()} events · ${HEADER.length} cols`;
   $('#footinfo').textContent=`${TOOL} ${VERSION}  ·  file: ${FILENAME||'(unknown)'}  ·  ${REC.length.toLocaleString()} events, ${HEADER.length} columns`;
   $('#g-from').value=''; $('#g-to').value=''; $('#g-public').checked=false;
+  nfSvc.clear(); rsSvc.clear();
+  renderChips($('#nf-svc'),nfSvc,drawNetflow); renderChips($('#rs-svc'),rsSvc,drawReset);
   buildStats(); redrawAll();
 }
 function redrawAll(){ updateGInfo(); drawNetflow(); drawReset(); drawAuth(); drawIOC(); drawTimeline(); }

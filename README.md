@@ -1,6 +1,6 @@
 # Taegis NetFlow Analyzer
 
-**Current build:** `Taegis-NetFlow-Analyzer-v0.3.html` (v0.3)
+**Current build:** `Taegis-NetFlow-Analyzer-v0.4.html` (v0.4)
 
 A single-file, **100% client-side** HTML tool for triaging **Secureworks Taegis XDR**
 search exports — the 252-column normalized event schema that carries FortiGate
@@ -30,6 +30,10 @@ _All screenshots use the fully synthetic sample in [`sample/`](sample/) — ever
 
 ![TCP reset anomalies](assets/03-tcp-reset-anomalies.png)
 
+**Service quick-filters** — one-click chips (RDP + WinRM active here) narrow the flow table to remote-access / lateral-movement ports:
+
+![Service quick-filter chips](assets/04-service-filter.png)
+
 ## Features
 
 - **Global time-range filter (UTC)** — a `From → To` range at the top filters
@@ -44,6 +48,12 @@ _All screenshots use the fully synthetic sample in [`sample/`](sample/) — ever
 - **Netflow triage** — top source/destination IPs, top destination IPs by bytes,
   top destination ports, with action / protocol / application columns and a
   filterable, sortable flow table.
+- **Service quick-filter chips** — one-click toggles that narrow the Netflow and
+  TCP-Reset tables to well-known service ports (match on source **or** destination
+  port; multiple chips OR together): **RDP** (3389), **WinRM** (5985/5986),
+  **HTTP/S** (80/443/8080/8443/8000), **SSH** (22), **SMB** (445/139), **DNS** (53),
+  **LDAP** (389/636/3268/3269), **Kerberos** (88), **RPC** (135), **SQL**
+  (1433/3306/5432/1521). Great for hunting remote-access and lateral movement.
 - **TCP reset anomalies** — isolates FortiGate `FW_RESET_*` flows (connections
   torn down by RST), with top reset sources/destinations, a **fan-out heuristic**
   (distinct destination ports per source — a scanning indicator), and a
@@ -61,7 +71,7 @@ footer of the page.
 
 ## Usage
 
-1. Open `Taegis-NetFlow-Analyzer-v0.3.html` in a browser (double-click), or grab
+1. Open `Taegis-NetFlow-Analyzer-v0.4.html` in a browser (double-click), or grab
    it from the [Releases](../../releases/latest) page.
 2. Drag a Taegis XDR export CSV onto the drop zone (or click **Load CSV…**).
 3. Use the tabs to triage. Click any IP to filter all views to it. Set a
