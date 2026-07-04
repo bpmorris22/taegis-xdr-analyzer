@@ -1,6 +1,6 @@
 # Taegis NetFlow Analyzer
 
-**Current build:** `Taegis-NetFlow-Analyzer-v0.5.html` (v0.5)
+**Current build:** `Taegis-NetFlow-Analyzer-v0.6.html` (v0.6)
 
 A single-file, **100% client-side** HTML tool for triaging **Secureworks Taegis XDR**
 search exports — the 252-column normalized event schema that carries FortiGate
@@ -22,7 +22,7 @@ _All screenshots use the fully synthetic sample in [`sample/`](sample/) — ever
 
 ![Opening screen](assets/01-opening.png)
 
-**Netflow triage** — top talkers, bytes, ports, plus a filterable flow table:
+**Netflow triage** — top talkers, bytes, ports, plus a filterable flow table with per-flow Service tags and Dst ASN / Country-City columns (headers are drag-resizable):
 
 ![Netflow triage with synthetic data](assets/02-netflow-synthetic.png)
 
@@ -48,6 +48,17 @@ _All screenshots use the fully synthetic sample in [`sample/`](sample/) — ever
 - **Netflow triage** — top source/destination IPs, top destination IPs by bytes,
   top destination ports, with action / protocol / application columns and a
   filterable, sortable flow table.
+- **Resizable columns** — drag the right edge of any column header; widths
+  persist per view across sorting and filtering.
+- **Service identification tags** — each flow with a recognized port gets a
+  label (RDP, WinRM, HTTP/S, SSH, SMB, DNS, LDAP, Kerberos, RPC, SQL, plus
+  FTP, Telnet, SMTP, POP3, IMAP, NTP, SNMP, Syslog, VNC, ADWS) shown in a
+  **Service** column on the Netflow, Reset, IOC, and Timeline tables.
+- **Geo breakout** — the Taegis `dest_ipgeo_summary` JSON is parsed into
+  dedicated **Dst ASN** (org + AS number) and **Dst Ctry/City** columns; the
+  raw geo blob is kept as the right-most column. Both are searchable via the
+  free-text filter (e.g. type `Dropbox` or `DE / Frankfurt`) and included in
+  CSV exports.
 - **Service quick-filter chips** — one-click toggles on the Netflow, TCP-Reset,
   **and Unified Timeline** views that narrow the table to well-known service ports
   (multiple chips OR together): **RDP** (3389), **WinRM** (5985/5986),
@@ -78,7 +89,7 @@ footer of the page.
 
 ## Usage
 
-1. Open `Taegis-NetFlow-Analyzer-v0.5.html` in a browser (double-click), or grab
+1. Open `Taegis-NetFlow-Analyzer-v0.6.html` in a browser (double-click), or grab
    it from the [Releases](../../releases/latest) page.
 2. Drag a Taegis XDR export CSV onto the drop zone (or click **Load CSV…**).
 3. Use the tabs to triage. Click any IP to filter all views to it. Set a
@@ -115,6 +126,7 @@ search export, not just netflow/VPN pivots.
 | Device / sensor | `sensor_id`, `sensor_type` |
 | Auth user | `user_name` → `target_user_name` → `extra_userprincipalname` → … |
 | MFA | `mfa_result`, `mfa_used` |
+| Dst geo | `dest_ipgeo_summary` (JSON → ASN org + number, `country.iso_code`, `city.name`) |
 
 ## Releasing
 

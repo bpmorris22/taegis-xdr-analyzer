@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Taegis NetFlow Analyzer v0.5</title>
+<title>Taegis NetFlow Analyzer v0.6</title>
 <style>
   :root{
     --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#30363d;
@@ -67,6 +67,10 @@
   .tag.bad{background:rgba(248,81,73,.15);color:var(--bad)}
   .tag.warn{background:rgba(210,153,34,.15);color:var(--warn)}
   .tag.muted{background:rgba(139,148,158,.12);color:var(--muted)}
+  .tag.svc{background:rgba(88,166,255,.14);color:var(--accent)}
+  table.fixed{table-layout:fixed}
+  .rz{position:absolute;top:0;right:0;width:7px;height:100%;cursor:col-resize}
+  .rz:hover,.rz.drag{background:var(--accent2)}
   tr.ioc td{background:rgba(255,107,107,.10)!important}
   tr.ioc td:first-child{box-shadow:inset 3px 0 0 var(--ioc)}
   .num{text-align:right;font-family:var(--mono)}
@@ -86,7 +90,7 @@
 </head>
 <body>
 <header>
-  <h1>Taegis NetFlow Analyzer <small>v0.5 · Taegis XDR / FortiGate triage</small></h1>
+  <h1>Taegis NetFlow Analyzer <small>v0.6 · Taegis XDR / FortiGate triage</small></h1>
   <span class="pill">100% client-side · no network</span>
   <span class="pill" id="fname">no file loaded</span>
   <span class="pill" id="srcpill"></span>
@@ -138,7 +142,7 @@
         <button class="btn" data-export="netflow">Export view → CSV</button>
       </div>
       <div class="scroll"><table id="nf-table"></table></div>
-      <p class="footnote">Bytes = tx+rx. Click an IP to filter every view to it.</p>
+      <p class="footnote">Bytes = tx+rx. Click an IP to filter every view to it. Drag the right edge of a column header to resize (widths persist per view).</p>
     </section>
 
     <!-- TCP RESET ANOMALIES -->
@@ -253,7 +257,7 @@ function parseCSV(text){
 }
 
 /* ---------- state ---------- */
-const TOOL='Taegis NetFlow Analyzer', VERSION='v0.5';
+const TOOL='Taegis NetFlow Analyzer', VERSION='v0.6';
 let HEADER=[], IDX={}, RAW=[], REC=[], IOCS=null, FILENAME='', DATAMIN=null, DATAMAX=null;
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 
@@ -325,6 +329,32 @@ function renderChips(el,st,redraw){
   inp.onchange=()=>{ st.custom=parsePorts(inp.value); inp.classList.toggle('on',st.custom.size>0); redraw(); };
   inp.onkeydown=e=>{ if(e.key==='Enter') inp.blur(); };
   el.querySelector('.chip.dir').onclick=e=>{ st.dstOnly=!st.dstOnly; e.target.classList.toggle('on',st.dstOnly); redraw(); };
+}
+
+/* port -> service label (SVC groups + label-only extras for identification) */
+const PORTLABEL={};
+for(const g of SVC) for(const p of g.ports) PORTLABEL[p]=g.k;
+Object.assign(PORTLABEL,{21:'FTP',23:'Telnet',25:'SMTP',465:'SMTP',587:'SMTP',110:'POP3',995:'POP3',
+  143:'IMAP',993:'IMAP',123:'NTP',161:'SNMP',514:'Syslog',5900:'VNC',9389:'ADWS'});
+function svcLabel(r){ return PORTLABEL[+r.dport]||PORTLABEL[+r.sport]||''; }
+function svcCell(r){ const s=svcLabel(r); return s?`<td><span class="tag svc">${esc(s)}</span></td>`:'<td></td>'; }
+
+/* dest_ipgeo_summary -> {asn, loc}; handles Taegis JSON blobs and simple "US/City" strings */
+function parseGeo(s){
+  if(!s||s==='-') return {asn:'',loc:''};
+  if(s[0]==='{'){
+    try{
+      const g=JSON.parse(s);
+      let asn=(g.asn&&g.asn.autonomous_system_org)||'';
+      if(g.asn&&g.asn.autonomous_system_no) asn+=(asn?' ':'')+'(AS'+g.asn.autonomous_system_no+')';
+      const ctry=(g.country&&(g.country.iso_code||g.country.code))||'';
+      const city=(g.city&&g.city.name)||'';
+      return {asn:asn.trim(), loc:[ctry,city].filter(Boolean).join(' / ')};
+    }catch(e){ return {asn:'',loc:''}; }
+  }
+  const m=s.split('/');                       // legacy "US/Ashburn" style
+  if(m.length===2&&m[0].length<=3) return {asn:'',loc:m[0]+' / '+m[1]};
+  return {asn:'',loc:s};
 }
 
 function col(...names){ // first header index that exists
@@ -417,6 +447,7 @@ function normalize(raw){
     dgeo:(val(raw,C.dst_geo)||'').trim(),
     authres:(val(raw,C.auth_res)||'').trim(),
   };
+  const g=parseGeo(r.dgeo); r.dasn=g.asn; r.dloc=g.loc;
   return r;
 }
 
@@ -469,17 +500,36 @@ function renderTable(el, cols, rows, sortState){
   const shown=data.slice(0,MAXROWS);
   let h='<thead><tr>'+cols.map((c,i)=>{
     const arrow=sortState&&sortState.key===i?(sortState.dir>0?' ▲':' ▼'):'';
-    return `<th data-k="${i}">${esc(c.h)}${arrow}</th>`;
+    const w=sortState&&sortState.w&&sortState.w[i]?` style="width:${sortState.w[i]}px"`:'';
+    return `<th data-k="${i}"${w}>${esc(c.h)}${arrow}<span class="rz"></span></th>`;
   }).join('')+'</tr></thead><tbody>';
   for(const r of shown){
     h+='<tr'+(IOCS&&r.__ioc?' class="ioc"':'')+'>'+cols.map(c=>c.td(r)).join('')+'</tr>';
   }
   h+='</tbody>';
   el.innerHTML=h;
+  el.classList.toggle('fixed',!!(sortState&&sortState.w)); // fixed layout once user has resized
   el.querySelectorAll('th').forEach(th=>th.onclick=()=>{
     const k=+th.dataset.k;
     if(sortState.key===k) sortState.dir*=-1; else {sortState.key=k;sortState.dir=1;}
     renderTable(el,cols,rows,sortState);
+  });
+  // column-resize handles (drag the right edge of a header; widths persist per view)
+  el.querySelectorAll('th .rz').forEach(hd=>{
+    hd.onclick=e=>e.stopPropagation();
+    hd.onmousedown=e=>{
+      e.preventDefault(); e.stopPropagation();
+      const th=hd.parentElement, k=+th.dataset.k, x0=e.clientX, w0=th.offsetWidth;
+      if(!sortState.w){ // first resize: freeze all current widths so nothing jumps
+        sortState.w={};
+        el.querySelectorAll('th').forEach((t,i)=>{ sortState.w[i]=t.offsetWidth; t.style.width=t.offsetWidth+'px'; });
+        el.classList.add('fixed');
+      }
+      hd.classList.add('drag');
+      const move=ev=>{ const nw=Math.max(40,w0+ev.clientX-x0); sortState.w[k]=nw; th.style.width=nw+'px'; };
+      const up=()=>{ hd.classList.remove('drag'); document.removeEventListener('mousemove',move); document.removeEventListener('mouseup',up); };
+      document.addEventListener('mousemove',move); document.addEventListener('mouseup',up);
+    };
   });
   return {total:data.length, shown:shown.length};
 }
@@ -508,7 +558,7 @@ function drawNetflow(){
   const sel=$('#nf-action');
   if(sel.options.length<=1){ [...new Set(all.map(r=>r.action).filter(Boolean))].sort().forEach(a=>sel.add(new Option(a,a))); }
   const q=$('#nf-q').value.toLowerCase().trim(), af=sel.value, ap=svcPorts(nfSvc);
-  const rows=all.filter(r=>svcOK(r,nfSvc,ap)&&(!af||r.action===af)&&(!q||[r.src,r.sport,r.dst,r.dport,r.proto,r.action,r.sgeo,r.dgeo].join(' ').toLowerCase().includes(q)));
+  const rows=all.filter(r=>svcOK(r,nfSvc,ap)&&(!af||r.action===af)&&(!q||[r.src,r.sport,r.dst,r.dport,r.proto,r.action,svcLabel(r),r.dasn,r.dloc,r.sgeo,r.dgeo].join(' ').toLowerCase().includes(q)));
   const cols=[
     {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
     {h:'Action',sort:r=>r.action,td:r=>`<td>${resultTag(r)}</td>`},
@@ -516,11 +566,14 @@ function drawNetflow(){
     {h:'sPort',sort:r=>+r.sport||0,td:r=>`<td class="mono">${esc(r.sport)}</td>`},
     {h:'Destination',sort:r=>r.dst,td:r=>ipCell(r.dst)},
     {h:'dPort',sort:r=>+r.dport||0,td:r=>`<td class="mono">${esc(r.dport)}</td>`},
+    {h:'Service',sort:r=>svcLabel(r),td:svcCell},
     {h:'Proto',sort:r=>r.proto,td:r=>`<td class="mono">${esc(r.proto)}</td>`},
     {h:'Bytes',sort:r=>r.bytes,td:r=>`<td class="num">${esc(fmtBytes(r.bytes))}</td>`},
     {h:'Application',sort:r=>r.app,td:r=>`<td title="${esc(r.app)}">${esc(r.app)}</td>`},
-    {h:'Dst geo',sort:r=>r.dgeo,td:r=>`<td title="${esc(r.dgeo)}">${esc(r.dgeo)}</td>`},
+    {h:'Dst ASN',sort:r=>r.dasn,td:r=>`<td title="${esc(r.dasn)}">${esc(r.dasn)}</td>`},
+    {h:'Dst Ctry/City',sort:r=>r.dloc,td:r=>`<td class="mono">${esc(r.dloc)}</td>`},
     {h:'Device',sort:r=>r.device,td:r=>`<td class="mono">${esc(r.device)}</td>`},
+    {h:'Dst geo (raw)',sort:r=>r.dgeo,td:r=>`<td class="muted" title="${esc(r.dgeo)}">${esc(r.dgeo)}</td>`},
   ];
   const {total,shown}=renderTable($('#nf-table'),cols,rows,sortNF);
   $('#nf-count').textContent=`${total.toLocaleString()} flows`+(shown<total?` (showing ${shown.toLocaleString()})`:'');
@@ -540,7 +593,7 @@ function drawReset(){
     `<span class="track"><span class="fill" style="width:${(v/fmax*100).toFixed(1)}%"></span></span>`+
     `<span class="val">${v} port${v===1?'':'s'}</span></div>`).join('') || '<span class="muted">none</span>';
   const q=$('#rs-q').value.toLowerCase().trim(), df=$('#rs-dir').value, ap=svcPorts(rsSvc);
-  const rows=all.filter(r=>svcOK(r,rsSvc,ap)&&(!df||resetDir(r)===df)&&(!q||[r.src,r.sport,r.dst,r.dport,r.proto,r.app,r.action,r.dgeo].join(' ').toLowerCase().includes(q)));
+  const rows=all.filter(r=>svcOK(r,rsSvc,ap)&&(!df||resetDir(r)===df)&&(!q||[r.src,r.sport,r.dst,r.dport,r.proto,r.app,r.action,svcLabel(r),r.dasn,r.dloc,r.dgeo].join(' ').toLowerCase().includes(q)));
   const cols=[
     {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
     {h:'Reset',sort:r=>r.action,td:r=>`<td><span class="tag bad" title="${esc(r.action)}">${resetDir(r)||'RST'}</span></td>`},
@@ -548,10 +601,13 @@ function drawReset(){
     {h:'sPort',sort:r=>+r.sport||0,td:r=>`<td class="mono">${esc(r.sport)}</td>`},
     {h:'Destination',sort:r=>r.dst,td:r=>ipCell(r.dst)},
     {h:'dPort',sort:r=>+r.dport||0,td:r=>`<td class="mono">${esc(r.dport)}</td>`},
+    {h:'Service',sort:r=>svcLabel(r),td:svcCell},
     {h:'Proto',sort:r=>r.proto,td:r=>`<td class="mono">${esc(r.proto)}</td>`},
     {h:'Bytes',sort:r=>r.bytes,td:r=>`<td class="num">${esc(fmtBytes(r.bytes))}</td>`},
     {h:'Application',sort:r=>r.app,td:r=>`<td title="${esc(r.app)}">${esc(r.app)}</td>`},
-    {h:'Dst geo',sort:r=>r.dgeo,td:r=>`<td title="${esc(r.dgeo)}">${esc(r.dgeo)}</td>`},
+    {h:'Dst ASN',sort:r=>r.dasn,td:r=>`<td title="${esc(r.dasn)}">${esc(r.dasn)}</td>`},
+    {h:'Dst Ctry/City',sort:r=>r.dloc,td:r=>`<td class="mono">${esc(r.dloc)}</td>`},
+    {h:'Dst geo (raw)',sort:r=>r.dgeo,td:r=>`<td class="muted" title="${esc(r.dgeo)}">${esc(r.dgeo)}</td>`},
   ];
   const {total,shown}=renderTable($('#rs-table'),cols,rows,sortRS);
   $('#rs-count').textContent=`${total.toLocaleString()} reset flows`+(shown<total?` (showing ${shown.toLocaleString()})`:'');
@@ -633,6 +689,7 @@ function drawIOC(){
     {h:'Source',sort:r=>r.src,td:r=>ipCell(r.src)},
     {h:'Destination',sort:r=>r.dst,td:r=>ipCell(r.dst)},
     {h:'dPort',sort:r=>+r.dport||0,td:r=>`<td class="mono">${esc(r.dport)}</td>`},
+    {h:'Service',sort:r=>svcLabel(r),td:svcCell},
     {h:'Action',sort:r=>r.action,td:r=>`<td>${resultTag(r)}</td>`},
     {h:'User',sort:r=>r.user,td:r=>`<td class="mono">${esc(r.user)}</td>`},
     {h:'Bytes',sort:r=>r.bytes,td:r=>`<td class="num">${esc(fmtBytes(r.bytes))}</td>`},
@@ -660,6 +717,7 @@ function drawTimeline(){
     {h:'Source',sort:r=>r.src,td:r=>ipCell(r.src)},
     {h:'Destination',sort:r=>r.dst,td:r=>ipCell(r.dst)},
     {h:'dPort',sort:r=>+r.dport||0,td:r=>`<td class="mono">${esc(r.dport)}</td>`},
+    {h:'Service',sort:r=>svcLabel(r),td:svcCell},
     {h:'User',sort:r=>r.user,td:r=>`<td class="mono">${esc(r.user)}</td>`},
     {h:'Event / domain',sort:r=>r.event||r.domain,td:r=>`<td title="${esc(r.event||r.domain)}">${esc(r.event||r.domain)}</td>`},
     {h:'Bytes',sort:r=>r.bytes,td:r=>`<td class="num">${esc(fmtBytes(r.bytes))}</td>`},
@@ -685,12 +743,12 @@ function collect(sel){ // re-derive filtered rows for export by reading current 
     return all.filter(r=>(!rf||(r.result||r.action)===rf)&&(!q||[r.user,r.src,r.dst,r.result,r.action,r.event,r.domain,r.authres,r.type].join(' ').toLowerCase().includes(q))); }
   return [];
 }
-const EXPORT_FIELDS=['ts','type','action','result','src','sport','dst','dport','proto','bytes','pkts','user','domain','host','event','device','sgeo','dgeo','__ioc'];
+const EXPORT_FIELDS=['ts','type','action','result','src','sport','dst','dport','service','proto','bytes','pkts','user','domain','host','event','device','dst_asn','dst_ctry_city','sgeo','dgeo','__ioc'];
 function csvCell(v){ v=(v==null?'':String(v)); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; }
 function exportCSV(view){
   const rows=currentRows(view);
   const head=['time_utc',...EXPORT_FIELDS.slice(1)].join(',');
-  const body=rows.map(r=>[fmtTs(r.ts),r.type,r.action,r.result,r.src,r.sport,r.dst,r.dport,r.proto,r.bytes,r.pkts,r.user,r.domain,r.host,r.event,r.device,r.sgeo,r.dgeo,r.__ioc||''].map(csvCell).join(',')).join('\n');
+  const body=rows.map(r=>[fmtTs(r.ts),r.type,r.action,r.result,r.src,r.sport,r.dst,r.dport,svcLabel(r),r.proto,r.bytes,r.pkts,r.user,r.domain,r.host,r.event,r.device,r.dasn,r.dloc,r.sgeo,r.dgeo,r.__ioc||''].map(csvCell).join(',')).join('\n');
   const base=FILENAME?FILENAME.replace(/\.csv$/i,''):'taegis';
   download(`${base}__${view}.csv`, head+'\n'+body);
 }
