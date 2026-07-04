@@ -1,0 +1,2 @@
+# Keep shell scripts LF so the shebang works when cloned on Linux/macOS.
+*.sh text eol=lf

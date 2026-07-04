@@ -14,6 +14,9 @@
 *.gz
 *.7z
 
+# …but DO allow the ONE curated synthetic sample (100% fabricated, safe to publish).
+!sample/taegis-sample-synthetic.csv
+
 # OS / editor noise
 Thumbs.db
 desktop.ini

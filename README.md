@@ -14,6 +14,22 @@ the analyst's machine.
 > exports (CSV/EVTX/PCAP/etc.) to this repo — the included `.gitignore` blocks
 > common evidence file types as a guardrail.
 
+## Screenshots
+
+_All screenshots use the fully synthetic sample in [`sample/`](sample/) — every IP, user, and hostname is fabricated._
+
+**Opening screen** — drag-and-drop a Taegis export:
+
+![Opening screen](assets/01-opening.png)
+
+**Netflow triage** — top talkers, bytes, ports, plus a filterable flow table:
+
+![Netflow triage with synthetic data](assets/02-netflow-synthetic.png)
+
+**TCP reset anomalies** — `FW_RESET_*` flows with a per-source fan-out heuristic (here `10.20.9.66` hits 8 distinct ports — a scanning pattern):
+
+![TCP reset anomalies](assets/03-tcp-reset-anomalies.png)
+
 ## Features
 
 - **Global time-range filter (UTC)** — a `From → To` range at the top filters
@@ -45,10 +61,15 @@ footer of the page.
 
 ## Usage
 
-1. Open `Taegis-NetFlow-Analyzer-v0.3.html` in a browser (double-click).
+1. Open `Taegis-NetFlow-Analyzer-v0.3.html` in a browser (double-click), or grab
+   it from the [Releases](../../releases/latest) page.
 2. Drag a Taegis XDR export CSV onto the drop zone (or click **Load CSV…**).
 3. Use the tabs to triage. Click any IP to filter all views to it. Set a
    **Time range (UTC)** at the top to scope every view to a window.
+
+Want to try it without real data? Load the included
+[`sample/taegis-sample-synthetic.csv`](sample/taegis-sample-synthetic.csv) — a
+small, fully fabricated dataset (netflow, a reset "scan", and M365 sign-ins).
 
 ## Why a dedicated parser
 
@@ -77,6 +98,25 @@ search export, not just netflow/VPN pivots.
 | Device / sensor | `sensor_id`, `sensor_type` |
 | Auth user | `user_name` → `target_user_name` → `extra_userprincipalname` → … |
 | MFA | `mfa_result`, `mfa_used` |
+
+## Releasing
+
+Releases attach the standalone HTML file so it can be downloaded without cloning.
+Cut a new one with the helper:
+
+```sh
+./release.sh v0.4                 # auto-picks the newest Taegis-NetFlow-Analyzer-*.html
+./release.sh v0.4 path/to.html    # or name the asset explicitly
+```
+
+Equivalent manual command:
+
+```sh
+gh release create v0.4 Taegis-NetFlow-Analyzer-v0.4.html \
+  --title "Taegis NetFlow Analyzer v0.4" --notes "…"
+```
+
+Downloads live at `https://github.com/bpmorris22/taegis-xdr-analyzer/releases/latest`.
 
 ## License
 
