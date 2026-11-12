@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Taegis NetFlow Analyzer v0.6</title>
+<title>Taegis NetFlow Analyzer v0.6.1</title>
 <style>
   :root{
     --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#30363d;
@@ -90,7 +90,7 @@
 </head>
 <body>
 <header>
-  <h1>Taegis NetFlow Analyzer <small>v0.6 · Taegis XDR / FortiGate triage</small></h1>
+  <h1>Taegis NetFlow Analyzer <small>v0.6.1 · Taegis XDR / FortiGate triage</small></h1>
   <span class="pill">100% client-side · no network</span>
   <span class="pill" id="fname">no file loaded</span>
   <span class="pill" id="srcpill"></span>
@@ -102,6 +102,7 @@
 <section id="drop">
   <p style="font-size:15px;margin:0 0 6px"><b>Drop a Taegis XDR export CSV here</b> or click to browse</p>
   <p class="muted" style="margin:0">Built for Secureworks Taegis search exports (252-col unified schema) carrying FortiGate netflow + M365/Entra auth. Columns are matched by name, so any Taegis export works.</p>
+  <p class="muted" style="margin:6px 0 0;font-size:12px">Large exports are fine (a ~300 MB / 100k-row export loads in about 15 s); the practical ceiling is the browser's ~500 MB text limit — beyond that, narrow the Taegis search time range.</p>
 </section>
 
 <div id="app" class="hidden">
@@ -233,32 +234,40 @@
 <script>
 "use strict";
 
-/* ---------- robust RFC-4180 CSV parser (handles embedded JSON, commas, "" escapes, newlines) ---------- */
+/* ---------- robust RFC-4180 CSV parser (handles embedded JSON, commas, "" escapes, newlines) ----------
+   Fields are cut out with slice()/indexOf() rather than built char-by-char: per-character
+   `field+=c` concatenation needs several GB for a ~300 MB export and kills the tab. */
 function parseCSV(text){
-  const rows=[]; let row=[], field='', i=0, q=false, n=text.length;
-  if(text.charCodeAt(0)===0xFEFF){i=1;} // strip BOM
+  const rows=[]; let row=[], i=0, n=text.length;
+  if(text.charCodeAt(0)===0xFEFF) i=1; // strip BOM
   while(i<n){
-    const c=text[i];
-    if(q){
-      if(c==='"'){
-        if(text[i+1]==='"'){field+='"';i+=2;continue;}
-        q=false;i++;continue;
+    let c=text.charCodeAt(i), f;
+    if(c===34){ // quoted field: copy runs between "" escapes
+      i++; let s=i, parts=null;
+      for(;;){
+        const j=text.indexOf('"',i);
+        if(j<0){ f=(parts?parts.join(''):'')+text.slice(s); i=n; break; } // unterminated quote
+        if(text.charCodeAt(j+1)===34){ (parts||(parts=[])).push(text.slice(s,j+1)); i=s=j+2; continue; }
+        f=parts?(parts.push(text.slice(s,j)),parts.join('')):text.slice(s,j); i=j+1; break;
       }
-      field+=c;i++;continue;
+    } else { // unquoted field: scan to the next delimiter
+      const s=i; while(i<n){ c=text.charCodeAt(i); if(c===44||c===10||c===13) break; i++; } f=text.slice(s,i);
     }
-    if(c==='"'){q=true;i++;continue;}
-    if(c===','){row.push(field);field='';i++;continue;}
-    if(c==='\r'){i++;continue;}
-    if(c==='\n'){row.push(field);rows.push(row);row=[];field='';i++;continue;}
-    field+=c;i++;
+    row.push(f);
+    c=text.charCodeAt(i);
+    if(c===44){ i++; if(i===n) row.push(''); continue; } // trailing comma at EOF = empty last field
+    if(c===13) i++;
+    if(text.charCodeAt(i)===10) i++;
+    rows.push(row); row=[];
   }
-  if(field.length||row.length){row.push(field);rows.push(row);}
+  if(row.length) rows.push(row);
   return rows;
 }
 
 /* ---------- state ---------- */
-const TOOL='Taegis NetFlow Analyzer', VERSION='v0.6';
-let HEADER=[], IDX={}, RAW=[], REC=[], IOCS=null, FILENAME='', DATAMIN=null, DATAMAX=null;
+const TOOL='Taegis NetFlow Analyzer', VERSION='v0.6.1';
+const LARGE_FILE=100*1048576; // above this, warn that parsing takes a while
+let HEADER=[], IDX={}, RAW=[], REC=[], IOCS=null, FILENAME='', FILESIZE=0, LOADMS=null, DATAMIN=null, DATAMAX=null;
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 
 /* global UTC time-range filter (datetime-local values are read as UTC to match the displayed times) */
@@ -792,12 +801,16 @@ function ingest(text){
   buildColMap();
   REC=[]; for(let i=1;i<RAW.length;i++){ if(RAW[i].length<2) continue; REC.push(normalize(RAW[i])); }
   $('#drop').classList.add('hidden'); $('#app').classList.remove('hidden');
-  $('#srcpill').textContent=`${REC.length.toLocaleString()} events · ${HEADER.length} cols`;
-  $('#footinfo').textContent=`${TOOL} ${VERSION}  ·  file: ${FILENAME||'(unknown)'}  ·  ${REC.length.toLocaleString()} events, ${HEADER.length} columns`;
+  LOADMS=null; updateLoadInfo();
   $('#g-from').value=''; $('#g-to').value=''; $('#g-public').checked=false;
   resetSvc(nfSvc); resetSvc(rsSvc); resetSvc(tlSvc);
   renderChips($('#nf-svc'),nfSvc,drawNetflow); renderChips($('#rs-svc'),rsSvc,drawReset); renderChips($('#tl-svc'),tlSvc,drawTimeline);
   buildStats(); redrawAll();
+}
+function updateLoadInfo(){
+  const sz=FILESIZE?fmtMB(FILESIZE):'', t=LOADMS!=null?` · parsed in ${(LOADMS/1000).toFixed(1)} s`:'';
+  $('#srcpill').textContent=`${REC.length.toLocaleString()} events · ${HEADER.length} cols`+(sz?' · '+sz:'')+t;
+  $('#footinfo').textContent=`${TOOL} ${VERSION}  ·  file: ${FILENAME||'(unknown)'}`+(sz?` (${sz})`:'')+`  ·  ${REC.length.toLocaleString()} events, ${HEADER.length} columns`+t;
 }
 function redrawAll(){ updateGInfo(); drawNetflow(); drawReset(); drawAuth(); drawIOC(); drawTimeline(); }
 function updateGInfo(){
@@ -807,7 +820,25 @@ function updateGInfo(){
     ? `${REC.filter(rowPass).length.toLocaleString()} of ${REC.length.toLocaleString()} events shown`
     : `full dataset (${REC.length.toLocaleString()} events)`;
 }
-function readFile(f){ FILENAME=f.name; $('#fname').textContent='📄 '+f.name; $('#srcpill').textContent='loading…'; const r=new FileReader(); r.onload=()=>ingest(r.result); r.readAsText(f); }
+function fmtMB(b){ return b>=1048576?(b/1048576).toFixed(1)+' MB':(b/1024).toFixed(0)+' KB'; }
+function readFile(f){
+  FILENAME=f.name; FILESIZE=f.size; const sz=fmtMB(f.size), pill=$('#srcpill');
+  $('#fname').textContent='📄 '+f.name+' ('+sz+')';
+  pill.textContent=`reading ${sz}…`;
+  const r=new FileReader();
+  r.onprogress=e=>{ if(e.lengthComputable) pill.textContent=`reading ${sz}… ${Math.round(e.loaded/e.total*100)}%`; };
+  r.onerror=()=>{ pill.textContent='load failed'; alert(`Could not read ${f.name} (${sz}): ${r.error&&r.error.message||'unknown error'}.\nVery large exports may exceed the browser's limit — narrow the Taegis search time range and re-export.`); };
+  r.onload=()=>{
+    pill.textContent=`parsing ${sz}…`+(f.size>LARGE_FILE?' (large file — this can take a while)':'');
+    setTimeout(()=>{ // let the status repaint before the synchronous parse
+      const t0=performance.now();
+      try{ ingest(r.result); }
+      catch(err){ pill.textContent='parse failed'; alert(`Failed to parse ${f.name} (${sz}): ${err.message}.\nIf the tab ran out of memory, narrow the Taegis search time range and re-export.`); return; }
+      LOADMS=performance.now()-t0; updateLoadInfo();
+    },30);
+  };
+  r.readAsText(f);
+}
 
 /* ---------- wiring ---------- */
 $('#loadBtn').onclick=()=>$('#file').click();

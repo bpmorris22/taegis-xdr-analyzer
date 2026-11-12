@@ -1,6 +1,6 @@
 # Taegis NetFlow Analyzer
 
-**Current build:** `Taegis-NetFlow-Analyzer-v0.6.html` (v0.6)
+**Current build:** `Taegis-NetFlow-Analyzer-v0.6.1.html` (v0.6.1)
 
 A single-file, **100% client-side** HTML tool for triaging **Secureworks Taegis XDR**
 search exports — the 252-column normalized event schema that carries FortiGate
@@ -89,7 +89,7 @@ footer of the page.
 
 ## Usage
 
-1. Open `Taegis-NetFlow-Analyzer-v0.6.html` in a browser (double-click), or grab
+1. Open `Taegis-NetFlow-Analyzer-v0.6.1.html` in a browser (double-click), or grab
    it from the [Releases](../../releases/latest) page.
 2. Drag a Taegis XDR export CSV onto the drop zone (or click **Load CSV…**).
 3. Use the tabs to triage. Click any IP to filter all views to it. Set a
@@ -107,6 +107,12 @@ comma-splitting):
 - **Embedded JSON** — several columns (`original_data`, `ingest`, `*_ipgeo_summary`,
   `event_metadata`, …) contain JSON with commas and quotes. The tool uses a proper
   RFC-4180 parser that respects quoted fields, `""` escapes, and embedded newlines.
+- **Size** — raw-log columns like `original_data` make exports big fast (a 100k-row
+  Check Point netflow export is ~300 MB). Since v0.6.1 the parser slices fields out
+  of the text instead of building them a character at a time, so files of that size
+  load in about 15 s instead of exhausting the tab's memory. The header shows read /
+  parse progress and the file size. The practical ceiling is the browser's ~500 MB
+  string limit; past that, narrow the Taegis search time range and re-export.
 - **`*_usec` columns are ISO-8601 strings** — despite the `_usec` suffix,
   `event_time_usec`, `start_timestamp_usec`, etc. hold strings like
   `2026-06-21T09:59:57Z`, not microsecond integers. The parser handles both forms.
