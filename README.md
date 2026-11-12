@@ -1,6 +1,6 @@
 # Taegis NetFlow Analyzer
 
-**Current build:** `Taegis-NetFlow-Analyzer-v0.6.1.html` (v0.6.1)
+**Current build:** `Taegis-NetFlow-Analyzer-v0.6.2.html` (v0.6.2)
 
 A single-file, **100% client-side** HTML tool for triaging **Secureworks Taegis XDR**
 search exports — the 252-column normalized event schema that carries FortiGate
@@ -89,7 +89,7 @@ footer of the page.
 
 ## Usage
 
-1. Open `Taegis-NetFlow-Analyzer-v0.6.1.html` in a browser (double-click), or grab
+1. Open `Taegis-NetFlow-Analyzer-v0.6.2.html` in a browser (double-click), or grab
    it from the [Releases](../../releases/latest) page.
 2. Drag a Taegis XDR export CSV onto the drop zone (or click **Load CSV…**).
 3. Use the tabs to triage. Click any IP to filter all views to it. Set a
