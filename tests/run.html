@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Regression tests · Taegis NetFlow Analyzer</title>
+<style>
+  body{margin:0;padding:16px;background:#0d1117;color:#e6edf3;font:13px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  h1{font-size:15px;margin:0 0 4px}
+  #status{margin:0 0 12px;color:#8b949e}
+  #status.pass{color:#3fb950} #status.fail{color:#f85149}
+  ol{list-style:none;margin:0 0 16px;padding:0}
+  li{padding:6px 10px;border:1px solid #30363d;border-radius:6px;margin-bottom:4px;background:#161b22}
+  li b{display:inline-block;min-width:44px}
+  li.pass b{color:#3fb950} li.fail b{color:#f85149}
+  li.fail{border-color:#f85149}
+  .detail{display:block;color:#8b949e;font:11px ui-monospace,Consolas,monospace;word-break:break-all;margin-top:2px}
+  iframe{width:100%;height:60vh;border:1px solid #30363d;border-radius:6px;background:#0d1117}
+</style>
+</head>
+<body>
+<h1>Regression tests</h1>
+<p id="status">Loading build…</p>
+<ol id="out"></ol>
+<iframe id="app" title="Analyzer build under test"></iframe>
+<script>
+"use strict";
+// ?build=<file in the repo root> picks a build; the default is the newest one (/latest, see serve.js).
+(async()=>{
+  const status=document.getElementById('status'), list=document.getElementById('out'), frame=document.getElementById('app');
+  if(location.protocol==='file:') throw new Error('open this page through tests/serve.js (node tests/serve.js), not from file://');
+  const build=new URLSearchParams(location.search).get('build');
+  frame.src=build?'/'+build.replace(/^\/+/,''):'/latest';
+  await new Promise((ok,bad)=>{ frame.onload=ok; frame.onerror=()=>bad(new Error('could not load the build')); });
+  const w=frame.contentWindow;
+  if(typeof w.parseCSV!=='function') throw new Error('the page in the frame is not an analyzer build: '+w.location.pathname);
+  status.textContent='Running against '+w.document.title+'…';
+  w.eval(await (await fetch('regression.js',{cache:'no-store'})).text());
+  const res=await w.__runTests();
+  for(const t of res.results){
+    const li=document.createElement('li'); li.className=t.pass?'pass':'fail';
+    const b=document.createElement('b'); b.textContent=t.pass?'PASS':'FAIL';
+    const d=document.createElement('span'); d.className='detail'; d.textContent=t.detail;
+    li.append(b,document.createTextNode(`${t.id} · ${t.name}`),d); list.append(li);
+  }
+  status.textContent=`${res.build}: ${res.passed} passed, ${res.failed} failed`;
+  status.className=res.failed?'fail':'pass';
+  document.title=(res.failed?'FAIL':'PASS')+' · '+res.build;
+  window.__results=res;   // for scripted runs
+})().catch(e=>{ const s=document.getElementById('status'); s.textContent='Runner error: '+e.message; s.className='fail'; window.__results={error:e.message}; });
+</script>
+</body>
+</html>

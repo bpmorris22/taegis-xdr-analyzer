@@ -1,6 +1,6 @@
 # Taegis NetFlow Analyzer
 
-**Current build:** `Taegis-NetFlow-Analyzer-v0.6.2.html` (v0.6.2)
+**Current build:** `Taegis-NetFlow-Analyzer-v0.6.3.html` (v0.6.3)
 
 A single-file, **100% client-side** HTML tool for triaging **Secureworks Taegis XDR**
 search exports — the 252-column normalized event schema that carries FortiGate
@@ -78,18 +78,36 @@ _All screenshots use the fully synthetic sample in [`sample/`](sample/) — ever
   direction filter (client→server / server→client resets).
 - **Auth / logon timeline** — `auth` + `cloudaudit` events (M365 / Entra sign-ins)
   with user, source IP, result, **MFA result**, and application.
-- **IOC sweep** — paste or load a list of IPs, CIDRs, and domains; matched events
-  are highlighted across every view (CIDR-aware matching).
+- **IOC sweep** — paste or load a list of IPv4 / IPv6 addresses, IPv4 CIDRs,
+  domains, or URLs; matched events are highlighted across every view
+  (CIDR-aware matching).
+  - Defanged indicators (`1.2.3[.]4`, `evil[.]com`, `hxxp://…`) are understood,
+    and a URL is reduced to its host. Anything after `#` on a line is a comment.
+  - Addresses are checked against the source, destination, NAT, and
+    `additional_*_addresses` columns; domains against the domain columns and
+    `additional_domain_names`.
+  - Tokens that are not an address or hostname (hashes, e-mail addresses, stray
+    words) are skipped and reported as "ignored" next to the parsed counts.
+    IPv6 CIDRs are not supported.
+  - Dropping a file on the IOC tab loads it as an IOC list. The list is kept
+    and re-swept when another export is loaded.
+- **Exact IP pivot** — clicking an IP, or typing a complete address into a filter
+  box, matches that exact source / destination address (`10.0.44.6` does not
+  match `10.0.44.65`). Partial text is still a substring match.
 - **Unified timeline + export** — all event types merged on one UTC timeline with
   free-text filtering, CSV export of the current view (named after the loaded
   file), and a "copy for case notes" button.
+  - Exports contain exactly the rows the table shows.
+  - Cells that a spreadsheet would run as a formula (starting with `=`, `+`,
+    `-`, or `@`) are exported with a leading apostrophe, because log fields are
+    attacker-influenced. Strip it if you need the byte-exact value.
 
 The loaded CSV's filename and the tool name/version are shown in the header and
 footer of the page.
 
 ## Usage
 
-1. Open `Taegis-NetFlow-Analyzer-v0.6.2.html` in a browser (double-click), or grab
+1. Open `Taegis-NetFlow-Analyzer-v0.6.3.html` in a browser (double-click), or grab
    it from the [Releases](../../releases/latest) page.
 2. Drag a Taegis XDR export CSV onto the drop zone (or click **Load CSV…**).
 3. Use the tabs to triage. Click any IP to filter all views to it. Set a
@@ -110,12 +128,16 @@ comma-splitting):
 - **Size** — raw-log columns like `original_data` make exports big fast (a 100k-row
   Check Point netflow export is ~300 MB). Since v0.6.1 the parser slices fields out
   of the text instead of building them a character at a time, so files of that size
-  load in about 15 s instead of exhausting the tab's memory. The header shows read /
-  parse progress and the file size. The practical ceiling is the browser's ~500 MB
-  string limit; past that, narrow the Taegis search time range and re-export.
+  load instead of exhausting the tab's memory. Since v0.6.3 it also skips the
+  columns the analyzer never reads (most of the JSON blobs) and does not keep the
+  raw rows, which took that export from about 12 s and ~600 MB of heap to about
+  3 s and ~50 MB. The header shows read / parse progress and the file size. The
+  practical ceiling is the browser's ~500 MB string limit; past that, narrow the
+  Taegis search time range and re-export.
 - **`*_usec` columns are ISO-8601 strings** — despite the `_usec` suffix,
   `event_time_usec`, `start_timestamp_usec`, etc. hold strings like
-  `2026-06-21T09:59:57Z`, not microsecond integers. The parser handles both forms.
+  `2026-06-21T09:59:57Z`, not microsecond integers. The parser handles both forms;
+  for raw epoch integers the unit (s / ms / µs / ns) is inferred from the magnitude.
 
 Columns are resolved **by header name**, so the tool works on any Taegis XDR
 search export, not just netflow/VPN pivots.
@@ -133,6 +155,18 @@ search export, not just netflow/VPN pivots.
 | Auth user | `user_name` → `target_user_name` → `extra_userprincipalname` → … |
 | MFA | `mfa_result`, `mfa_used` |
 | Dst geo | `dest_ipgeo_summary` (JSON → ASN org + number, `country.iso_code`, `city.name`) |
+
+## Tests
+
+Browser regression tests live in [`tests/`](tests/). They use fabricated data only
+and need nothing but Node.js to serve the files:
+
+```sh
+node tests/serve.js     # then open http://127.0.0.1:8765/tests/run.html
+```
+
+See [`tests/README.md`](tests/README.md) for what is covered. Run them before
+cutting a release.
 
 ## Releasing
 

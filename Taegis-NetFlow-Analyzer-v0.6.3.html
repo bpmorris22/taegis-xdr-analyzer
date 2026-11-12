@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Taegis NetFlow Analyzer v0.6.2</title>
+<title>Taegis NetFlow Analyzer v0.6.3</title>
 <style>
   :root{
     --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#30363d;
@@ -90,7 +90,7 @@
 </head>
 <body>
 <header>
-  <h1>Taegis NetFlow Analyzer <small>v0.6.2 · Taegis XDR / FortiGate triage</small></h1>
+  <h1>Taegis NetFlow Analyzer <small>v0.6.3 · Taegis XDR / FortiGate triage</small></h1>
   <span class="pill">100% client-side · no network</span>
   <span class="pill" id="fname">no file loaded</span>
   <span class="pill" id="srcpill"></span>
@@ -102,7 +102,7 @@
 <section id="drop">
   <p style="font-size:15px;margin:0 0 6px"><b>Drop a Taegis XDR export CSV here</b> or click to browse</p>
   <p class="muted" style="margin:0">Built for Secureworks Taegis search exports (252-col unified schema) carrying FortiGate netflow + M365/Entra auth. Columns are matched by name, so any Taegis export works.</p>
-  <p class="muted" style="margin:6px 0 0;font-size:12px">Large exports are fine (a ~300 MB / 100k-row export loads in about 15 s); the practical ceiling is the browser's ~500 MB text limit — beyond that, narrow the Taegis search time range.</p>
+  <p class="muted" style="margin:6px 0 0;font-size:12px">Large exports are fine (a ~300 MB / 100k-row export loads in a few seconds); the practical ceiling is the browser's ~500 MB text limit — beyond that, narrow the Taegis search time range.</p>
 </section>
 
 <div id="app" class="hidden">
@@ -143,7 +143,7 @@
         <button class="btn" data-export="netflow">Export view → CSV</button>
       </div>
       <div class="scroll"><table id="nf-table"></table></div>
-      <p class="footnote">Bytes = tx+rx. Click an IP to filter every view to it. Drag the right edge of a column header to resize (widths persist per view).</p>
+      <p class="footnote">Bytes = tx+rx. Click an IP to filter every view to it; a complete IP in a filter box matches that exact address, anything else is a substring match. Drag the right edge of a column header to resize (widths persist per view).</p>
     </section>
 
     <!-- TCP RESET ANOMALIES -->
@@ -188,7 +188,7 @@
       <div class="grid2">
         <div class="card">
           <h3>IOC list</h3>
-          <p class="legend">Paste IPs / CIDRs / domains (one per line, or comma/space separated). Lines starting with # are ignored. Or drop a .txt IOC file below.</p>
+          <p class="legend">Paste IPv4 / IPv6 addresses, IPv4 CIDRs, domains or URLs (one per line, or comma/space separated). Defanged forms such as <span class="mono">1.2.3[.]4</span> and <span class="mono">hxxp://</span> are understood; anything after # is ignored. Addresses are checked against source, destination, NAT and additional-address columns. Or drop a .txt IOC file anywhere on this tab.</p>
           <textarea id="ioc-input" placeholder="45.84.59.21&#10;193.187.151.190&#10;evil.example.com&#10;# comments allowed"></textarea>
           <div class="controls" style="margin-top:8px">
             <button class="btn primary" id="ioc-run">Sweep</button>
@@ -236,43 +236,55 @@
 
 /* ---------- robust RFC-4180 CSV parser (handles embedded JSON, commas, "" escapes, newlines) ----------
    Fields are cut out with slice()/indexOf() rather than built char-by-char: per-character
-   `field+=c` concatenation needs several GB for a ~300 MB export and kills the tab. */
-function parseCSV(text){
-  const rows=[]; let row=[], i=0, n=text.length;
+   `field+=c` concatenation needs several GB for a ~300 MB export and kills the tab.
+   pick(headerRow), if given, returns a true/false list per column; columns marked false are
+   skipped over and left as ''. Most of a Taegis export is JSON blobs the analyzer never reads,
+   and un-escaping their "" pairs was where nearly all of the parse time went. */
+function parseCSV(text, pick){
+  const rows=[]; let row=[], mask=null, i=0, n=text.length;
   if(text.charCodeAt(0)===0xFEFF) i=1; // strip BOM
   while(i<n){
-    let c=text.charCodeAt(i), f;
+    let c=text.charCodeAt(i), f='';
+    const want=!mask||mask[row.length]!==false;
     if(c===34){ // quoted field: copy runs between "" escapes
       i++; let s=i, parts=null;
       for(;;){
         const j=text.indexOf('"',i);
-        if(j<0){ f=(parts?parts.join(''):'')+text.slice(s); i=n; break; } // unterminated quote
-        if(text.charCodeAt(j+1)===34){ (parts||(parts=[])).push(text.slice(s,j+1)); i=s=j+2; continue; }
-        f=parts?(parts.push(text.slice(s,j)),parts.join('')):text.slice(s,j); i=j+1; break;
+        if(j<0){ if(want) f=(parts?parts.join(''):'')+text.slice(s); i=n; break; } // unterminated quote
+        if(text.charCodeAt(j+1)===34){ if(want) (parts||(parts=[])).push(text.slice(s,j+1)); i=s=j+2; continue; }
+        if(want) f=parts?(parts.push(text.slice(s,j)),parts.join('')):text.slice(s,j);
+        i=j+1; break;
       }
-    } else { // unquoted field: scan to the next delimiter
-      const s=i; while(i<n){ c=text.charCodeAt(i); if(c===44||c===10||c===13) break; i++; } f=text.slice(s,i);
     }
+    // unquoted field (or stray text after a closing quote): runs to the next delimiter
+    const s=i; while(i<n){ c=text.charCodeAt(i); if(c===44||c===10||c===13) break; i++; }
+    if(want&&i>s) f=f?f+text.slice(s,i):text.slice(s,i);
     row.push(f);
     c=text.charCodeAt(i);
     if(c===44){ i++; if(i===n) row.push(''); continue; } // trailing comma at EOF = empty last field
     if(c===13) i++;
     if(text.charCodeAt(i)===10) i++;
     rows.push(row); row=[];
+    if(pick&&rows.length===1) mask=pick(rows[0]);
   }
   if(row.length) rows.push(row);
   return rows;
 }
 
 /* ---------- state ---------- */
-const TOOL='Taegis NetFlow Analyzer', VERSION='v0.6.2';
+const TOOL='Taegis NetFlow Analyzer', VERSION='v0.6.3';
 const LARGE_FILE=100*1048576; // above this, warn that parsing takes a while
-let HEADER=[], IDX={}, RAW=[], REC=[], IOCS=null, FILENAME='', FILESIZE=0, LOADMS=null, DATAMIN=null, DATAMAX=null;
+let HEADER=[], IDX={}, REC=[], IOCS=null, FILENAME='', FILESIZE=0, LOADMS=null, DATAMIN=null, DATAMAX=null;
+const VIEWROWS={};  // rows each view last rendered (after all filters) — exports and "copy" use exactly these
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+function debounce(fn,ms=200){ let t; return ()=>{ clearTimeout(t); t=setTimeout(fn,ms); }; }
 
 /* global UTC time-range filter (datetime-local values are read as UTC to match the displayed times) */
 function gms(sel){ const v=$(sel).value; if(!v) return null; const s=(v.length===16?v+':00':v)+'Z'; const t=Date.parse(s); return isNaN(t)?null:t; }
-function timeOK(r){ const f=gms('#g-from'), t=gms('#g-to'); if(f!=null&&r.tsv<f) return false; if(t!=null&&r.tsv>t) return false; return true; }
+/* the global filter inputs are read once at the start of each draw (syncGF), not once per row */
+const GF={from:null,to:null,pub:false};
+function syncGF(){ GF.from=gms('#g-from'); GF.to=gms('#g-to'); GF.pub=$('#g-public').checked; }
+function timeOK(r){ if(GF.from!=null&&r.tsv<GF.from) return false; if(GF.to!=null&&r.tsv>GF.to) return false; return true; }
 function toUTCInput(ms){ return new Date(ms).toISOString().slice(0,19); }
 function isReset(r){ return r.cat==='netflow' && /RESET|RST/i.test(r.action); }
 function resetDir(r){ const a=(r.action||'').toUpperCase(); if(a.includes('CLIENT_TO_SERVER'))return 'C2S'; if(a.includes('SERVER_TO_CLIENT'))return 'S2C'; return ''; }
@@ -294,7 +306,7 @@ function isPublicIP(ip){
   if(ipToInt(ip)==null) return false;            // not a v4 address (hostname, blank, etc.)
   return !isPrivate4(ip);
 }
-function publicOK(r){ if(!$('#g-public').checked) return true; return isPublicIP(r.src)||isPublicIP(r.dst); }
+function publicOK(r){ return !GF.pub||r.pub; }   // r.pub is worked out once at load
 /* single gate every view applies: time range AND public-IP toggle */
 function rowPass(r){ return timeOK(r) && publicOK(r); }
 
@@ -366,12 +378,26 @@ function parseGeo(s){
   return {asn:'',loc:s};
 }
 
+let USED=new Set();   // column indexes buildColMap resolved — the only ones parseCSV materialises
 function col(...names){ // first header index that exists
-  for(const nm of names){ if(nm in IDX) return IDX[nm]; }
+  for(const nm of names){ if(nm in IDX){ USED.add(IDX[nm]); return IDX[nm]; } }
   return -1;
 }
 function val(raw, idx){ return idx>=0 && idx<raw.length ? raw[idx] : ''; }
-function firstNonEmpty(raw, idxs){ for(const ix of idxs){ const v=val(raw,ix); if(v && v.trim()) return v.trim(); } return ''; }
+/* Parsed fields are slices of the file text, and a slice keeps the whole text in memory. own()
+   copies each distinct value once (values repeat heavily: IPs, actions, geo blobs), so that once
+   the records are built the text itself can be freed. POOL only exists while a file is loading. */
+let POOL=null;
+function own(s){
+  if(!s||!POOL) return s;
+  let c=POOL.get(s);
+  if(c===undefined){ c=(' '+s).slice(1); POOL.set(c,c); }   // concat + slice forces a fresh copy
+  return c;
+}
+function sval(raw, idx){ return own((val(raw,idx)||'').trim()); }
+function firstNonEmpty(raw, idxs){ for(const ix of idxs){ const v=val(raw,ix); if(v && v.trim()) return own(v.trim()); } return ''; }
+/* multi-value columns (JSON array or delimited list) -> array of values */
+function listVals(raw, idx){ const v=val(raw,idx); return v?v.split(/[\s,;|\[\]"']+/).filter(Boolean).map(own):[]; }
 
 /* map header-name columns once */
 let C={};
@@ -403,8 +429,7 @@ function buildColMap(){
     domain: [col('domain_name'),col('source_domain_name'),col('target_domain_name'),col('dns_name')].filter(x=>x>=0),
     host: [col('source_hostname'),col('hostname'),col('target_hostname')].filter(x=>x>=0),
     auth_res: col('auth_error_code_description'),
-    auth_proto: col('auth_protocol'),
-    ts: [col('event_time_usec'),col('start_timestamp_usec'),col('created_time_usec'),col('first_event_time_usec'),col('ingest_time_usec')].filter(x=>x>=0)
+    ts:[col('event_time_usec'),col('start_timestamp_usec'),col('created_time_usec'),col('first_event_time_usec'),col('ingest_time_usec')].filter(x=>x>=0)
   };
 }
 
@@ -413,8 +438,8 @@ function usecToDate(raw){
     let v=val(raw,ix); if(!v) continue; v=v.trim(); if(!v) continue;
     // Taegis exports these columns as ISO-8601 strings despite the _usec name…
     if(/^\d{4}-\d{2}-\d{2}T/.test(v)){ const d=new Date(v); if(!isNaN(d)) return d; }
-    // …but tolerate raw epoch microseconds too (13-19 digits).
-    if(/^\d{13,19}$/.test(v)) return new Date(Number(v)/1000);
+    // …but tolerate raw epoch integers too; the unit (s / ms / µs / ns) is inferred from the magnitude.
+    if(/^\d{10,19}$/.test(v)){ const n=Number(v); return new Date(n<1e11?n*1000 : n<1e14?n : n<1e17?n/1000 : n/1e6); }
   }
   return null;
 }
@@ -426,37 +451,41 @@ function protoName(v){ return PROTO[v]?PROTO[v]+'('+v+')':v; }
 /* normalize one raw row -> record */
 function normalize(raw){
   const d=usecToDate(raw);
-  const t=(val(raw,C.type)||'').trim();
+  const t=sval(raw,C.type);
   const r={
-    raw,
     ts:d, tsv:d?d.getTime():0,
     type:t,
     cat: (t==='netflow')?'netflow' : (t==='auth'||t==='cloudaudit')?'auth' : 'other',
     action:firstNonEmpty(raw,C.action),
-    result:(val(raw,C.action_result)||'').trim(),
-    src:(val(raw,C.src_ip)||'').trim(),
-    sport:(val(raw,C.src_port)||'').trim(),
-    dst:(val(raw,C.dst_ip)||'').trim(),
-    dport:(val(raw,C.dst_port)||'').trim(),
-    nat:(val(raw,C.nat)||'').trim(),
-    proto:protoName((val(raw,C.proto)||'').trim()),
+    result:sval(raw,C.action_result),
+    src:sval(raw,C.src_ip),
+    sport:sval(raw,C.src_port),
+    dst:sval(raw,C.dst_ip),
+    dport:sval(raw,C.dst_port),
+    nat:sval(raw,C.nat),
+    proto:own(protoName((val(raw,C.proto)||'').trim())),
     bytes:num(val(raw,C.tx_b))+num(val(raw,C.rx_b)),
     pkts:num(val(raw,C.tx_p))+num(val(raw,C.rx_p)),
-    app:(val(raw,C.app)||'').trim(),
-    dir:(val(raw,C.direction)||'').trim(),
-    mfa:(val(raw,C.mfa_res)||(val(raw,C.mfa_used)==='true'?'MFA_USED':'')||'').trim(),
-    event:(val(raw,C.event)||'').trim(),
-    vendor:(val(raw,C.vendor)||'').trim(),
-    sensor:(val(raw,C.sensor)||'').trim(),
-    device:(val(raw,C.device)||'').trim(),
+    app:sval(raw,C.app),
+    dir:sval(raw,C.direction),
+    mfa:own((val(raw,C.mfa_res)||(val(raw,C.mfa_used)==='true'?'MFA_USED':'')||'').trim()),
+    event:sval(raw,C.event),
+    vendor:sval(raw,C.vendor),
+    sensor:sval(raw,C.sensor),
+    device:sval(raw,C.device),
     user:firstNonEmpty(raw,C.user),
     domain:firstNonEmpty(raw,C.domain),
     host:firstNonEmpty(raw,C.host),
-    sgeo:(val(raw,C.src_geo)||'').trim(),
-    dgeo:(val(raw,C.dst_geo)||'').trim(),
-    authres:(val(raw,C.auth_res)||'').trim(),
+    sgeo:sval(raw,C.src_geo),
+    dgeo:sval(raw,C.dst_geo),
+    authres:sval(raw,C.auth_res),
+    xips:null, xdoms:null,   // extra addresses / domains from the additional_* columns (IOC sweep only)
+    pub:false, dasn:'', dloc:'', __ioc:null,
   };
-  const g=parseGeo(r.dgeo); r.dasn=g.asn; r.dloc=g.loc;
+  const xi=listVals(raw,C.src_extra).concat(listVals(raw,C.dst_extra)); if(xi.length) r.xips=xi;
+  const xd=listVals(raw,C.domain_extra); if(xd.length) r.xdoms=xd;
+  r.pub=isPublicIP(r.src)||isPublicIP(r.dst);
+  const g=parseGeo(r.dgeo); r.dasn=own(g.asn); r.dloc=own(g.loc);
   return r;
 }
 
@@ -464,12 +493,35 @@ function normalize(raw){
 function fmtTs(d){ if(!d) return ''; return d.toISOString().replace('T',' ').replace('.000Z','Z').replace('Z',' UTC'); }
 function fmtBytes(n){ if(!n) return ''; const u=['B','KB','MB','GB','TB']; let i=0; while(n>=1024&&i<u.length-1){n/=1024;i++;} return n.toFixed(i?1:0)+' '+u[i]; }
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }
+/* failure words are tested first: UNSUCCESSFUL, INVALID_PASSWORD and NOT_ALLOWED all contain a success word */
+const BAD_RE=/FAIL|BLOCK|DEN(Y|IED)|DROP|REJECT|UNSUCC|INVALID|EXPIRED|DISALLOW|NOT[_ ]?(ALLOW|ACCEPT|PERMIT|SUCC)/;
+const OK_RE=/SUCC|ALLOW|ACCEPT|(^|[^A-Z])PASS(ED)?($|[^A-Z])/;
 function resultTag(r){
   const s=(r.result||r.action||'').toUpperCase();
-  if(/SUCC|ALLOW|ACCEPT|PASS/.test(s)) return '<span class="tag ok">'+esc(s||'OK')+'</span>';
-  if(/FAIL|BLOCK|DENY|DROP|REJECT/.test(s)) return '<span class="tag bad">'+esc(s)+'</span>';
+  if(BAD_RE.test(s)) return '<span class="tag bad">'+esc(s)+'</span>';
+  if(OK_RE.test(s)) return '<span class="tag ok">'+esc(s)+'</span>';
   if(s) return '<span class="tag warn">'+esc(s)+'</span>';
   return '';
+}
+function mfaTag(v){
+  if(!v) return '';
+  const s=v.toUpperCase();
+  const cls=/FAIL|DEN(Y|IED)|UNSUCC|REJECT/.test(s)?'bad' : /NOT[_ ]?USED|UNUSED/.test(s)?'warn' : /SUCCESS|USED/.test(s)?'ok' : 'muted';
+  return `<span class="tag ${cls}">${esc(v)}</span>`;
+}
+/* free-text filter over a per-view field list. A complete IP address matches whole source /
+   destination addresses only, so pivoting on 10.0.44.6 does not also return 10.0.44.65;
+   anything else is a case-insensitive substring match. Returns null when the box is empty. */
+function textMatch(q, fields){
+  q=q.toLowerCase().trim(); if(!q) return null;
+  const v6=normIP6(q);
+  if(v6) return r=>normIP6(r.src)===v6||normIP6(r.dst)===v6;
+  if(ipToInt(q)!=null) return r=>r.src===q||r.dst===q;
+  return r=>fields(r).join(' ').toLowerCase().includes(q);
+}
+function fillSelect(sel, values){ // "all …" option + the distinct values, rebuilt on every file load
+  sel.length=1; sel.value='';
+  [...new Set(values.filter(Boolean))].sort().forEach(v=>sel.add(new Option(v,v)));
 }
 
 /* ---------- top-N bar widget ---------- */
@@ -559,15 +611,14 @@ const nfSvc=mkSvc(), rsSvc=mkSvc(), tlSvc=mkSvc();  // service-filter state per 
 function ipCell(v){ return v?`<td class="mono ip">${esc(v)}</td>`:'<td></td>'; }
 
 function drawNetflow(){
+  syncGF();
   const all=REC.filter(r=>r.cat==='netflow'&&rowPass(r));
   $('#nf-topsrc').innerHTML=topN(all,r=>r.src);
   $('#nf-topdst').innerHTML=topNBytes(all,r=>r.dst);
   $('#nf-topport').innerHTML=topN(all,r=>r.dport);
-  // action filter options
-  const sel=$('#nf-action');
-  if(sel.options.length<=1){ [...new Set(all.map(r=>r.action).filter(Boolean))].sort().forEach(a=>sel.add(new Option(a,a))); }
-  const q=$('#nf-q').value.toLowerCase().trim(), af=sel.value, ap=svcPorts(nfSvc);
-  const rows=all.filter(r=>svcOK(r,nfSvc,ap)&&(!af||r.action===af)&&(!q||[r.src,r.sport,r.dst,r.dport,r.proto,r.action,svcLabel(r),r.dasn,r.dloc,r.sgeo,r.dgeo].join(' ').toLowerCase().includes(q)));
+  const af=$('#nf-action').value, ap=svcPorts(nfSvc);
+  const tm=textMatch($('#nf-q').value,r=>[r.src,r.sport,r.dst,r.dport,r.proto,r.action,svcLabel(r),r.dasn,r.dloc,r.sgeo,r.dgeo]);
+  const rows=VIEWROWS.netflow=all.filter(r=>svcOK(r,nfSvc,ap)&&(!af||r.action===af)&&(!tm||tm(r)));
   const cols=[
     {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
     {h:'Action',sort:r=>r.action,td:r=>`<td>${resultTag(r)}</td>`},
@@ -589,6 +640,7 @@ function drawNetflow(){
 }
 
 function drawReset(){
+  syncGF();
   const all=REC.filter(r=>isReset(r)&&rowPass(r));
   $('#rs-topsrc').innerHTML=topN(all,r=>r.src);
   $('#rs-topdst').innerHTML=topN(all,r=>r.dst);
@@ -601,8 +653,9 @@ function drawReset(){
     `<div class="barrow"><span class="lab" title="${esc(k)}">${esc(k)}</span>`+
     `<span class="track"><span class="fill" style="width:${(v/fmax*100).toFixed(1)}%"></span></span>`+
     `<span class="val">${v} port${v===1?'':'s'}</span></div>`).join('') || '<span class="muted">none</span>';
-  const q=$('#rs-q').value.toLowerCase().trim(), df=$('#rs-dir').value, ap=svcPorts(rsSvc);
-  const rows=all.filter(r=>svcOK(r,rsSvc,ap)&&(!df||resetDir(r)===df)&&(!q||[r.src,r.sport,r.dst,r.dport,r.proto,r.app,r.action,svcLabel(r),r.dasn,r.dloc,r.dgeo].join(' ').toLowerCase().includes(q)));
+  const df=$('#rs-dir').value, ap=svcPorts(rsSvc);
+  const tm=textMatch($('#rs-q').value,r=>[r.src,r.sport,r.dst,r.dport,r.proto,r.app,r.action,svcLabel(r),r.dasn,r.dloc,r.dgeo]);
+  const rows=VIEWROWS.reset=all.filter(r=>svcOK(r,rsSvc,ap)&&(!df||resetDir(r)===df)&&(!tm||tm(r)));
   const cols=[
     {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
     {h:'Reset',sort:r=>r.action,td:r=>`<td><span class="tag bad" title="${esc(r.action)}">${resetDir(r)||'RST'}</span></td>`},
@@ -620,18 +673,17 @@ function drawReset(){
   ];
   const {total,shown}=renderTable($('#rs-table'),cols,rows,sortRS);
   $('#rs-count').textContent=`${total.toLocaleString()} reset flows`+(shown<total?` (showing ${shown.toLocaleString()})`:'');
-  window.__resetRows=rows;
 }
 
 function drawAuth(){
+  syncGF();
   const all=REC.filter(r=>r.cat==='auth'&&rowPass(r));
   $('#au-topuser').innerHTML=topN(all,r=>r.user);
   $('#au-topip').innerHTML=topN(all,r=>r.src||r.dst);
   $('#au-result').innerHTML=topN(all,r=>r.result||r.action||r.authres);
-  const sel=$('#au-res');
-  if(sel.options.length<=1){ [...new Set(all.map(r=>r.result||r.action).filter(Boolean))].sort().forEach(a=>sel.add(new Option(a,a))); }
-  const q=$('#au-q').value.toLowerCase().trim(), rf=sel.value;
-  const rows=all.filter(r=>(!rf||(r.result||r.action)===rf)&&(!q||[r.user,r.src,r.dst,r.result,r.action,r.event,r.domain,r.authres,r.type].join(' ').toLowerCase().includes(q)));
+  const rf=$('#au-res').value;
+  const tm=textMatch($('#au-q').value,r=>[r.user,r.src,r.dst,r.result,r.action,r.event,r.domain,r.authres,r.type]);
+  const rows=VIEWROWS.auth=all.filter(r=>(!rf||(r.result||r.action)===rf)&&(!tm||tm(r)));
   const cols=[
     {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
     {h:'Type',sort:r=>r.type,td:r=>`<td><span class="tag muted">${esc(r.type)}</span></td>`},
@@ -639,7 +691,7 @@ function drawAuth(){
     {h:'User',sort:r=>r.user,td:r=>`<td class="mono">${esc(r.user)}</td>`},
     {h:'Source IP',sort:r=>r.src,td:r=>ipCell(r.src)},
     {h:'Result',sort:r=>r.result||r.action,td:r=>`<td>${resultTag(r)}${r.authres&&r.authres!=='Other.'?' <span class="muted">'+esc(r.authres)+'</span>':''}</td>`},
-    {h:'MFA',sort:r=>r.mfa,td:r=>`<td>${r.mfa?('<span class="tag '+(/SUCCESS|USED/.test(r.mfa)?'ok':/FAIL|DENY/.test(r.mfa)?'bad':'muted')+'">'+esc(r.mfa)+'</span>'):''}</td>`},
+    {h:'MFA',sort:r=>r.mfa,td:r=>`<td>${mfaTag(r.mfa)}</td>`},
     {h:'Application',sort:r=>r.app,td:r=>`<td title="${esc(r.app)}">${esc(r.app)}</td>`},
     {h:'Geo',sort:r=>r.sgeo,td:r=>`<td title="${esc(r.sgeo)}">${esc(r.sgeo)}</td>`},
   ];
@@ -648,37 +700,68 @@ function drawAuth(){
 }
 
 /* ---------- IOC sweep ---------- */
-function ipToInt(ip){ const p=ip.split('.'); if(p.length!==4) return null; let n=0; for(const o of p){const x=+o; if(!(x>=0&&x<=255))return null; n=n*256+x;} return n>>>0; }
+function ipToInt(ip){ const p=ip.split('.'); if(p.length!==4) return null; let n=0; for(const o of p){ if(!/^\d{1,3}$/.test(o)) return null; const x=+o; if(x>255) return null; n=n*256+x; } return n>>>0; }
+/* canonical IPv6 (8 lowercase hextets, no "::") so 2001:DB8::1 and 2001:db8:0:0:0:0:0:1 compare equal; null if not IPv6 */
+function normIP6(s){
+  if(!s||!s.includes(':')) return null;
+  s=s.toLowerCase().replace(/^\[|\]$/g,'').replace(/%.*$/,'');   // [addr] brackets, %zone
+  if(/[^0-9a-f:.]/.test(s)) return null;
+  const v4=s.match(/(\d{1,3}(?:\.\d{1,3}){3})$/);                 // ::ffff:1.2.3.4
+  if(v4){ const n=ipToInt(v4[1]); if(n==null) return null; s=s.slice(0,-v4[1].length)+(n>>>16).toString(16)+':'+(n&0xffff).toString(16); }
+  const halves=s.split('::'); if(halves.length>2) return null;
+  const head=halves[0]?halves[0].split(':'):[], tail=halves.length===2&&halves[1]?halves[1].split(':'):[];
+  const fill=8-head.length-tail.length;
+  if(halves.length===2?fill<1:fill!==0) return null;
+  const parts=[...head,...Array(halves.length===2?fill:0).fill('0'),...tail];
+  if(parts.some(h=>!/^[0-9a-f]{1,4}$/.test(h))) return null;
+  return parts.map(h=>h.replace(/^0+(?=.)/,'')).join(':');
+}
+/* undo common defanging: 1.2.3[.]4, evil[dot]com, hxxp://, [:] */
+function refang(t){ return t.replace(/\[\.\]|\(\.\)|\{\.\}|\[dot\]|\(dot\)/gi,'.').replace(/\[:\/\/\]/g,'://').replace(/\[:\]/g,':').replace(/^hxxp/i,'http'); }
 function parseIOCs(text){
-  const ips=new Set(), cidrs=[], doms=new Set();
-  text.split(/[\s,;]+/).forEach(tok=>{
-    tok=tok.trim(); if(!tok||tok.startsWith('#')) return;
-    let m;
-    if(m=tok.match(/^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/)){
-      const base=ipToInt(m[1]); const bits=+m[2];
-      if(base!=null&&bits>=0&&bits<=32){ const mask=bits===0?0:(~0<<(32-bits))>>>0; cidrs.push([base&mask,mask]); }
-    } else if(/^\d{1,3}(?:\.\d{1,3}){3}$/.test(tok)){ ips.add(tok); }
-    else { doms.add(tok.toLowerCase().replace(/^\*\./,'')); }
-  });
-  return {ips,cidrs,doms};
+  const ips=new Set(), cidrs=[], doms=new Set(); let ignored=0;
+  for(const line of text.split(/\r?\n/)){
+    for(let tok of line.replace(/(^|\s)#.*$/,'').split(/[\s,;]+/)){   // '#' starts a comment that runs to the end of the line
+      if(!tok) continue;
+      tok=refang(tok);
+      let m;
+      if(m=tok.match(/^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/)){
+        const base=ipToInt(m[1]), bits=+m[2];
+        if(base!=null&&bits<=32){ const mask=bits===0?0:(~0<<(32-bits))>>>0; cidrs.push([(base&mask)>>>0,mask]); } else ignored++;
+        continue;
+      }
+      if(/^[a-z][a-z0-9+.-]*:\/\//i.test(tok)) tok=tok.replace(/^[a-z][a-z0-9+.-]*:\/\//i,'').replace(/[\/?#].*$/,'').replace(/^[^@\[]*@/,'');  // URL -> host[:port]
+      const v6=normIP6(tok.replace(/^\[([^\]]+)\](:\d+)?$/,'$1'));       // [v6]:port
+      if(v6){ ips.add(v6); continue; }
+      tok=tok.replace(/:\d+$/,'');                                       // host:port
+      if(ipToInt(tok)!=null){ ips.add(tok); continue; }
+      tok=tok.toLowerCase().replace(/^\*\./,'').replace(/\.$/,'');
+      // must look like a hostname with a non-numeric last label; hashes, e-mail addresses and stray words are counted as ignored
+      if(/^[a-z0-9_-]+(\.[a-z0-9_-]+)+$/.test(tok)&&/[a-z]/.test(tok.slice(tok.lastIndexOf('.')+1))) doms.add(tok); else ignored++;
+    }
+  }
+  return {ips,cidrs,doms,ignored};
 }
 function iocHit(r){
   if(!IOCS) return null;
-  const ipset=[r.src,r.dst];
-  for(const ip of ipset){
+  for(const ip of r.xips?[r.src,r.dst,r.nat,...r.xips]:[r.src,r.dst,r.nat]){
     if(!ip) continue;
+    if(ip.includes(':')){ const k=normIP6(ip); if(k&&IOCS.ips.has(k)) return ip; continue; }
     if(IOCS.ips.has(ip)) return ip;
-    const n=ipToInt(ip);
-    if(n!=null) for(const [base,mask] of IOCS.cidrs){ if((n&mask)===base) return ip; }
+    if(IOCS.cidrs.length){ const n=ipToInt(ip); if(n!=null) for(const [base,mask] of IOCS.cidrs){ if(((n&mask)>>>0)===base) return ip; } }
   }
-  const dl=(r.domain||'').toLowerCase();
-  if(dl) for(const d of IOCS.doms){ if(dl===d||dl.endsWith('.'+d)) return r.domain; }
+  if(IOCS.doms.size) for(const dom of r.xdoms?[r.domain,...r.xdoms]:[r.domain]){
+    const dl=(dom||'').toLowerCase(); if(!dl) continue;
+    for(const d of IOCS.doms){ if(dl===d||dl.endsWith('.'+d)) return dom; }
+  }
   return null;
 }
-function runSweep(){
+function loadIOCFile(f){ const r=new FileReader(); r.onload=()=>{ $('#ioc-input').value=r.result; runSweep(); }; r.readAsText(f); }
+function runSweep(){ markIOCs(); drawIOC(); drawTimeline(); }
+function markIOCs(){ // (re)flag every record against the IOC box and refresh the summary — also re-run when a new file is loaded
   const parsed=parseIOCs($('#ioc-input').value);
   IOCS=parsed;
-  $('#ioc-parsed').textContent=`${parsed.ips.size} IPs, ${parsed.cidrs.length} CIDRs, ${parsed.doms.size} domains`;
+  $('#ioc-parsed').textContent=`${parsed.ips.size} IPs, ${parsed.cidrs.length} CIDRs, ${parsed.doms.size} domains`+(parsed.ignored?`, ${parsed.ignored} ignored`:'');
   let hits=0;
   for(const r of REC){ const h=iocHit(r); r.__ioc=h||null; if(h) hits++; }
   const matchedIPs=new Set(REC.filter(r=>r.__ioc).map(r=>r.__ioc));
@@ -687,10 +770,10 @@ function runSweep(){
       `<div class="muted">across ${matchedIPs.size} distinct indicator value(s)</div>`+
       `<div style="margin-top:6px">${[...matchedIPs].slice(0,20).map(x=>'<span class="tag bad" style="margin:2px">'+esc(x)+'</span>').join('')}</div>`
     : '<span class="ok tag">No IOC matches in this dataset.</span>';
-  drawIOC(); drawTimeline();
 }
 function drawIOC(){
-  const rows=REC.filter(r=>r.__ioc&&rowPass(r));
+  syncGF();
+  const rows=VIEWROWS.ioc=REC.filter(r=>r.__ioc&&rowPass(r));
   const cols=[
     {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
     {h:'IOC',sort:r=>r.__ioc,td:r=>`<td class="mono" style="color:var(--ioc)">${esc(r.__ioc)}</td>`},
@@ -709,16 +792,10 @@ function drawIOC(){
 
 /* ---------- unified timeline ---------- */
 function drawTimeline(){
-  const sel=$('#tl-type');
-  if(sel.options.length<=1){ [...new Set(REC.map(r=>r.type).filter(Boolean))].sort().forEach(t=>sel.add(new Option(t,t))); }
-  const q=$('#tl-q').value.toLowerCase().trim(), tf=sel.value, ap=svcPorts(tlSvc);
-  const rows=REC.filter(r=>{
-    if(tf&&r.type!==tf) return false;
-    if(!rowPass(r)) return false;
-    if(!svcOK(r,tlSvc,ap)) return false;
-    if(q){ const blob=[r.type,r.action,r.result,r.src,r.sport,r.dst,r.dport,r.proto,r.user,r.domain,r.event,r.host,r.device,r.sgeo,r.dgeo].join(' ').toLowerCase(); if(!blob.includes(q)) return false; }
-    return true;
-  });
+  syncGF();
+  const tf=$('#tl-type').value, ap=svcPorts(tlSvc);
+  const tm=textMatch($('#tl-q').value,r=>[r.type,r.action,r.result,r.src,r.sport,r.dst,r.dport,r.proto,r.user,r.domain,r.event,r.host,r.device,r.sgeo,r.dgeo]);
+  const rows=VIEWROWS.timeline=REC.filter(r=>(!tf||r.type===tf)&&rowPass(r)&&svcOK(r,tlSvc,ap)&&(!tm||tm(r)));
   const cols=[
     {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
     {h:'Type',sort:r=>r.type,td:r=>`<td><span class="tag muted">${esc(r.type)}</span></td>`},
@@ -733,27 +810,22 @@ function drawTimeline(){
   ];
   const {total,shown}=renderTable($('#tl-table'),cols,rows,sortTL);
   $('#tl-count').textContent=`${total.toLocaleString()} events`+(shown<total?` (showing ${shown.toLocaleString()})`:'');
-  window.__tlRows=rows;
 }
 
 /* ---------- export ---------- */
-function currentRows(view){
-  if(view==='netflow'){ drawNetflow(); return collect('#nf-table'); }
-  if(view==='reset'){ drawReset(); return window.__resetRows||[]; }
-  if(view==='auth'){ drawAuth(); return collect('#au-table'); }
-  if(view==='ioc'){ return REC.filter(r=>r.__ioc&&rowPass(r)); }
-  if(view==='timeline'){ drawTimeline(); return window.__tlRows||[]; }
-  return [];
-}
-function collect(sel){ // re-derive filtered rows for export by reading current filter inputs
-  if(sel==='#nf-table'){ const all=REC.filter(r=>r.cat==='netflow'&&rowPass(r)); const q=$('#nf-q').value.toLowerCase().trim(),af=$('#nf-action').value,ap=svcPorts(nfSvc);
-    return all.filter(r=>svcOK(r,nfSvc,ap)&&(!af||r.action===af)&&(!q||[r.src,r.sport,r.dst,r.dport,r.proto,r.action,r.sgeo,r.dgeo].join(' ').toLowerCase().includes(q))); }
-  if(sel==='#au-table'){ const all=REC.filter(r=>r.cat==='auth'&&rowPass(r)); const q=$('#au-q').value.toLowerCase().trim(),rf=$('#au-res').value;
-    return all.filter(r=>(!rf||(r.result||r.action)===rf)&&(!q||[r.user,r.src,r.dst,r.result,r.action,r.event,r.domain,r.authres,r.type].join(' ').toLowerCase().includes(q))); }
-  return [];
+const DRAW={netflow:drawNetflow,reset:drawReset,auth:drawAuth,ioc:drawIOC,timeline:drawTimeline};
+function currentRows(view){ // redraw first (a debounced keystroke may be pending), then export exactly the rows the table shows
+  if(!DRAW[view]) return [];
+  DRAW[view](); return VIEWROWS[view]||[];
 }
 const EXPORT_FIELDS=['ts','type','action','result','src','sport','dst','dport','service','proto','bytes','pkts','user','domain','host','event','device','dst_asn','dst_ctry_city','sgeo','dgeo','__ioc'];
-function csvCell(v){ v=(v==null?'':String(v)); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; }
+/* Log fields are attacker-influenced: a cell starting with = + - @ (or tab / CR) would run as a formula when the
+   export is opened in Excel or Sheets, so it gets a leading apostrophe. A lone "-" and plain negative numbers are left alone. */
+function csvCell(v){
+  v=(v==null?'':String(v));
+  if(/^[=+@\t\r]/.test(v)||(v.length>1&&v[0]==='-'&&!/^-\d+(\.\d+)?$/.test(v))) v="'"+v;
+  return /[",\r\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;
+}
 function exportCSV(view){
   const rows=currentRows(view);
   const head=['time_utc',...EXPORT_FIELDS.slice(1)].join(',');
@@ -766,7 +838,7 @@ function download(name,text){
   const a=document.createElement('a'); a.href=u; a.download=name; a.click(); URL.revokeObjectURL(u);
 }
 function copyNotes(){
-  const rows=(window.__tlRows||[]).slice(0,500);
+  const rows=(VIEWROWS.timeline||[]).slice(0,500);
   const lines=rows.map(r=>`${fmtTs(r.ts)} | ${r.type} | ${r.action||r.result} | ${r.src||''}${r.sport?':'+r.sport:''} -> ${r.dst||''}${r.dport?':'+r.dport:''} | ${r.user||''} ${r.domain||''} ${r.event||''}`.trim());
   navigator.clipboard.writeText(lines.join('\n')).then(()=>{
     $('#tl-copy').textContent='Copied '+rows.length+' rows ✓'; setTimeout(()=>$('#tl-copy').textContent='Copy for case notes',1800);
@@ -794,47 +866,68 @@ function buildStats(){
 function stat(n,l){ return `<div class="stat"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`; }
 
 /* ---------- load pipeline ---------- */
+/* Returns false (leaving the loaded dataset untouched) if the text has no event rows. */
 function ingest(text){
-  RAW=parseCSV(text);
-  if(!RAW.length){ alert('Empty / unparseable file'); return; }
-  HEADER=RAW[0]; IDX={}; HEADER.forEach((h,i)=>{ if(!(h in IDX)) IDX[h.trim()]=i; });
-  buildColMap();
-  REC=[]; for(let i=1;i<RAW.length;i++){ if(RAW[i].length<2) continue; REC.push(normalize(RAW[i])); }
+  const prev=[HEADER,IDX,C]; let rows, recs=[];
+  try{
+    // the header row decides which columns are worth materialising: only the ones buildColMap resolves
+    rows=parseCSV(text,hdr=>{
+      HEADER=hdr; IDX=Object.create(null); hdr.forEach((h,i)=>{ h=h.trim(); if(!(h in IDX)) IDX[h]=i; });
+      USED=new Set(); buildColMap();
+      return hdr.map((_,i)=>USED.has(i));
+    });
+    POOL=new Map();
+    for(let i=1;i<rows.length;i++){ if(rows[i].length<2) continue; recs.push(normalize(rows[i])); }
+  }catch(e){ [HEADER,IDX,C]=prev; throw e; }
+  finally{ POOL=null; }
+  if(!recs.length){ [HEADER,IDX,C]=prev; alert(rows.length?'No event rows found — is this a Taegis CSV export?':'Empty / unparseable file'); return false; }
+  REC=recs;
   $('#drop').classList.add('hidden'); $('#app').classList.remove('hidden');
   LOADMS=null; updateLoadInfo();
+  // a new file starts from a clean slate: global filters, per-view filters and dropdowns
   $('#g-from').value=''; $('#g-to').value=''; $('#g-public').checked=false;
+  ['#nf-q','#rs-q','#au-q','#tl-q','#rs-dir'].forEach(s=>$(s).value='');
+  fillSelect($('#nf-action'),REC.filter(r=>r.cat==='netflow').map(r=>r.action));
+  fillSelect($('#au-res'),REC.filter(r=>r.cat==='auth').map(r=>r.result||r.action));
+  fillSelect($('#tl-type'),REC.map(r=>r.type));
   resetSvc(nfSvc); resetSvc(rsSvc); resetSvc(tlSvc);
   renderChips($('#nf-svc'),nfSvc,drawNetflow); renderChips($('#rs-svc'),rsSvc,drawReset); renderChips($('#tl-svc'),tlSvc,drawTimeline);
+  if(IOCS) markIOCs();   // the IOC list is the analyst's input, not the file's: keep it and sweep the new data
   buildStats(); redrawAll();
+  return true;
 }
 function updateLoadInfo(){
   const sz=FILESIZE?fmtMB(FILESIZE):'', t=LOADMS!=null?` · parsed in ${(LOADMS/1000).toFixed(1)} s`:'';
+  $('#fname').textContent=FILENAME?'📄 '+FILENAME+(sz?' ('+sz+')':''):'no file loaded';
+  if(!HEADER.length){ $('#srcpill').textContent=''; return; }
   $('#srcpill').textContent=`${REC.length.toLocaleString()} events · ${HEADER.length} cols`+(sz?' · '+sz:'')+t;
   $('#footinfo').textContent=`${TOOL} ${VERSION}  ·  file: ${FILENAME||'(unknown)'}`+(sz?` (${sz})`:'')+`  ·  ${REC.length.toLocaleString()} events, ${HEADER.length} columns`+t;
 }
 function redrawAll(){ updateGInfo(); drawNetflow(); drawReset(); drawAuth(); drawIOC(); drawTimeline(); }
 function updateGInfo(){
   if(!REC.length){ $('#g-info').textContent=''; return; }
-  const filtered=(gms('#g-from')!=null||gms('#g-to')!=null||$('#g-public').checked);
+  syncGF();
+  const filtered=(GF.from!=null||GF.to!=null||GF.pub);
   $('#g-info').textContent=filtered
     ? `${REC.filter(rowPass).length.toLocaleString()} of ${REC.length.toLocaleString()} events shown`
     : `full dataset (${REC.length.toLocaleString()} events)`;
 }
 function fmtMB(b){ return b>=1048576?(b/1048576).toFixed(1)+' MB':(b/1024).toFixed(0)+' KB'; }
 function readFile(f){
-  FILENAME=f.name; FILESIZE=f.size; const sz=fmtMB(f.size), pill=$('#srcpill');
-  $('#fname').textContent='📄 '+f.name+' ('+sz+')';
-  pill.textContent=`reading ${sz}…`;
+  // FILENAME / FILESIZE only change once the file has loaded, so a failed load leaves the current dataset and its labels intact
+  const sz=fmtMB(f.size), what=`${f.name} (${sz})`, pill=$('#srcpill');
+  pill.textContent=`reading ${what}…`;
   const r=new FileReader();
-  r.onprogress=e=>{ if(e.lengthComputable) pill.textContent=`reading ${sz}… ${Math.round(e.loaded/e.total*100)}%`; };
-  r.onerror=()=>{ pill.textContent='load failed'; alert(`Could not read ${f.name} (${sz}): ${r.error&&r.error.message||'unknown error'}.\nVery large exports may exceed the browser's limit — narrow the Taegis search time range and re-export.`); };
+  r.onprogress=e=>{ if(e.lengthComputable) pill.textContent=`reading ${what}… ${Math.round(e.loaded/e.total*100)}%`; };
+  r.onerror=()=>{ updateLoadInfo(); alert(`Could not read ${what}: ${r.error&&r.error.message||'unknown error'}.\nVery large exports may exceed the browser's limit — narrow the Taegis search time range and re-export.`); };
   r.onload=()=>{
-    pill.textContent=`parsing ${sz}…`+(f.size>LARGE_FILE?' (large file — this can take a while)':'');
+    pill.textContent=`parsing ${what}…`+(f.size>LARGE_FILE?' (large file — this can take a while)':'');
     setTimeout(()=>{ // let the status repaint before the synchronous parse
-      const t0=performance.now();
-      try{ ingest(r.result); }
-      catch(err){ pill.textContent='parse failed'; alert(`Failed to parse ${f.name} (${sz}): ${err.message}.\nIf the tab ran out of memory, narrow the Taegis search time range and re-export.`); return; }
-      LOADMS=performance.now()-t0; updateLoadInfo();
+      const t0=performance.now(); let ok=false;
+      try{ ok=ingest(r.result); }
+      catch(err){ alert(`Failed to parse ${what}: ${err.message}.\nIf the tab ran out of memory, narrow the Taegis search time range and re-export.`); }
+      if(ok){ FILENAME=f.name; FILESIZE=f.size; LOADMS=performance.now()-t0; }
+      updateLoadInfo();
     },30);
   };
   r.readAsText(f);
@@ -846,16 +939,21 @@ $('#drop').onclick=()=>$('#file').click();
 $('#file').onchange=e=>{ if(e.target.files[0]) readFile(e.target.files[0]); };
 const drop=$('#drop');
 ['dragenter','dragover'].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('hot');}));
-['dragleave','drop'].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault();if(ev==='drop'){const f=e.dataTransfer.files[0]; if(f)readFile(f);} drop.classList.remove('hot');}));
+['dragleave','drop'].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault();
+  if(ev==='drop'){ const f=e.dataTransfer.files[0];
+    // a file dropped on the IOC tab is an IOC list, not a new dataset
+    if(f){ if(e.target instanceof Element&&e.target.closest('#view-ioc')) loadIOCFile(f); else readFile(f); } }
+  drop.classList.remove('hot');}));
 
 $$('nav button').forEach(b=>b.onclick=()=>{
   $$('nav button').forEach(x=>x.classList.remove('active')); b.classList.add('active');
   $$('.view').forEach(v=>v.classList.remove('active')); $('#view-'+b.dataset.v).classList.add('active');
 });
-$('#nf-q').oninput=drawNetflow; $('#nf-action').onchange=drawNetflow;
-$('#rs-q').oninput=drawReset; $('#rs-dir').onchange=drawReset;
-$('#au-q').oninput=drawAuth; $('#au-res').onchange=drawAuth;
-$('#tl-q').oninput=drawTimeline; $('#tl-type').onchange=drawTimeline;
+// text filters redraw once typing pauses, not on every keystroke
+$('#nf-q').oninput=debounce(drawNetflow); $('#nf-action').onchange=drawNetflow;
+$('#rs-q').oninput=debounce(drawReset); $('#rs-dir').onchange=drawReset;
+$('#au-q').oninput=debounce(drawAuth); $('#au-res').onchange=drawAuth;
+$('#tl-q').oninput=debounce(drawTimeline); $('#tl-type').onchange=drawTimeline;
 $('#tl-clear').onclick=()=>{ $('#tl-q').value='';$('#tl-type').value=''; drawTimeline(); };
 $('#tl-copy').onclick=copyNotes;
 $('#g-from').onchange=redrawAll; $('#g-to').onchange=redrawAll; $('#g-public').onchange=redrawAll;
@@ -863,7 +961,7 @@ $('#g-clear').onclick=()=>{ $('#g-from').value=''; $('#g-to').value=''; $('#g-pu
 $('#g-full').onclick=()=>{ if(DATAMIN!=null){ $('#g-from').value=toUTCInput(DATAMIN); $('#g-to').value=toUTCInput(DATAMAX); } redrawAll(); };
 $('#ioc-run').onclick=runSweep;
 $('#ioc-loadfile').onclick=()=>$('#ioc-file').click();
-$('#ioc-file').onchange=e=>{ const f=e.target.files[0]; if(!f)return; const r=new FileReader(); r.onload=()=>{ $('#ioc-input').value=r.result; runSweep(); }; r.readAsText(f); };
+$('#ioc-file').onchange=e=>{ const f=e.target.files[0]; if(f) loadIOCFile(f); };
 $$('[data-export]').forEach(b=>b.onclick=()=>exportCSV(b.dataset.export));
 </script>
 </body>
