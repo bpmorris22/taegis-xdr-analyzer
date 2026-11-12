@@ -7,7 +7,7 @@ window.__runTests = async function(){
   const alerts=[]; window.alert=m=>alerts.push(String(m));   // failed loads alert(); don't block the run
   const q=s=>document.querySelector(s), qa=s=>[...document.querySelectorAll(s)];
   const cell=v=>/[",\n]/.test(v)?'"'+String(v).replace(/"/g,'""')+'"':String(v);
-  const H=['type','event_time_usec','action','flow_action','action_result','source_address','source_port','destination_address','destination_port','source_nat_address','protocol','tx_byte_count','rx_byte_count','application_name','mfa_result','mfa_used','event_name','sensor_type','sensor_id','dest_ipgeo_summary','user_name','domain_name','additional_destination_addresses','additional_domain_names','source_domain_name','target_domain_name','dns_name','auth_error_code_description'];
+  const H=['type','event_time_usec','action','flow_action','action_result','source_address','source_port','destination_address','destination_port','source_nat_address','protocol','tx_byte_count','rx_byte_count','application_name','mfa_result','mfa_used','event_name','sensor_type','sensor_id','dest_ipgeo_summary','user_name','domain_name','additional_destination_addresses','additional_domain_names','source_domain_name','target_domain_name','dns_name','auth_error_code_description','additional_source_addresses'];
   const mk=rows=>[H.join(','),...rows.map(o=>H.map(h=>cell(o[h]??'')).join(','))].join('\n')+'\n';
   const nf=o=>({type:'netflow',event_time_usec:'2026-03-15T14:00:00Z',flow_action:'FW_ALLOWED',source_address:'10.20.5.11',source_port:'51544',destination_address:'140.82.113.20',destination_port:'443',protocol:'6',tx_byte_count:'100',rx_byte_count:'200',sensor_type:'FORTIGATE_FW',sensor_id:'FW-EDGE-01',...o});
   const au=o=>({type:'auth',event_time_usec:'2026-03-15T14:05:00Z',action:'LOGON',source_address:'203.0.113.9',user_name:'a@x.test',...o});
@@ -243,6 +243,57 @@ window.__runTests = async function(){
     const pub=['9.255.255.255','11.0.0.0','172.15.255.255','172.32.0.0','192.167.255.255','192.169.0.0','100.63.255.255','100.128.0.0','198.17.255.255','198.20.0.0','223.255.255.255','8.8.8.8','126.255.255.255','128.0.0.0'];
     const badParse=Object.keys(parse).filter(k=>ipToInt(k)!==parse[k]), badPriv=priv.filter(a=>isPublicIP(a)), badPub=pub.filter(a=>!isPublicIP(a));
     return {pass:!badParse.length&&!badPriv.length&&!badPub.length,detail:`wrong parses: ${JSON.stringify(badParse)}; private seen as public: ${JSON.stringify(badPriv)}; public seen as private: ${JSON.stringify(badPub)}`};
+  });
+
+  /* ---- v0.6.5: findings from the recheck of v0.6.4 ---- */
+
+  await test('20','additional_* columns are decoded as JSON arrays before IOC matching',()=>{
+    // '\\u002e' below puts the six characters . in the CSV cell: a valid JSON escape for "."
+    load([nf({additional_domain_names:'["evil.example"]'}),nf({additional_domain_names:'["evil\\u002eexample"]'}),
+      nf({additional_destination_addresses:'["45.84.59.21"]'}),nf({additional_destination_addresses:'["45\\u002e84.59.21"]'}),nf({additional_source_addresses:'["45\\u002e84.59.21"]'}),
+      nf({additional_domain_names:'[["evil.example"],{"x":1},7]'}),            // nested array is flattened; object and number members are harmless
+      nf({additional_domain_names:'["evil.example","x.example"'}),             // malformed (unterminated) array: falls back to the delimited reading
+      nf({additional_domain_names:'other.example; evil.example'}),             // plain delimited list
+      nf({additional_domain_names:'["safe.example"]',additional_destination_addresses:'["10.1.1.1"]'})]);
+    q('#ioc-input').value='evil.example\n45.84.59.21'; runSweep();
+    const flags=REC.map(r=>r.__ioc?1:0).join('');
+    return {pass:flags==='111111110',detail:`rows [literal domain, escaped domain, literal dst, escaped dst, escaped src, nested, malformed array, delimited, clean] flagged: ${flags}`};
+  });
+
+  await test('21','a trailing DNS root dot on evidence domains does not prevent an IOC match',()=>{
+    const rows=[nf({domain_name:'evil.example.'}),nf({domain_name:'evil.example'}),nf({domain_name:'not-evil.example'}),nf({domain_name:'cdn.evil.example.'}),
+      nf({domain_name:'safe.example',target_domain_name:'evil.example.'}),nf({additional_domain_names:'["evil.example."]'})];
+    load(rows); q('#ioc-input').value='evil.example.'; runSweep();
+    const dotted=REC.map(r=>r.__ioc?1:0).join(''), shown=REC[0].__ioc, kept=REC[0].domain;
+    load(rows); q('#ioc-input').value='EVIL.example'; runSweep();
+    const undotted=REC.map(r=>r.__ioc?1:0).join('');
+    return {pass:dotted==='110111'&&undotted==='110111'&&shown==='evil.example.'&&kept==='evil.example.',
+      detail:`IOC "evil.example." flagged: ${dotted}; IOC "EVIL.example" flagged: ${undotted} (expected 110111; third row is the not-evil.example control); evidence shown as: ${shown}`};
+  });
+
+  await test('22','mfa_used=false is kept as MFA_NOT_USED, distinct from missing MFA data',()=>{
+    load([au({user_name:'u1@x.test',mfa_used:'true'}),au({user_name:'u2@x.test',mfa_used:'false'}),au({user_name:'u3@x.test'}),
+      au({user_name:'u4@x.test',mfa_result:'MFA_SUCCESS',mfa_used:'false'}),au({user_name:'u5@x.test',mfa_used:'FALSE'}),nf({user_name:'n1',mfa_used:'false'})]);
+    const want={'u1@x.test':'MFA_USED','u2@x.test':'MFA_NOT_USED','u3@x.test':'','u4@x.test':'MFA_SUCCESS','u5@x.test':'MFA_NOT_USED','n1':''};
+    const rec={}; for(const r of REC) rec[r.user]=r.mfa;
+    drawAuth(); const dom={}; for(const tr of qa('#au-table tbody tr')) dom[tr.children[3].textContent.trim()]=tr.children[6].textContent.trim();
+    let cap=''; const orig=window.download; window.download=(n,t)=>{cap=t;}; exportCSV('timeline'); window.download=orig;
+    const csv=parseCSV(cap), iu=csv[0].indexOf('user'), im=csv[0].indexOf('mfa'), exp={}; for(const row of csv.slice(1)) exp[row[iu]]=row[im];
+    const ok=o=>Object.keys(want).every(k=>(o[k]??'')===want[k]);
+    return {pass:ok(rec)&&ok({...dom,n1:''})&&ok(exp),detail:`records: ${JSON.stringify(rec)}; auth table: ${JSON.stringify(dom)}; export: ${JSON.stringify(exp)}`};
+  });
+
+  await test('23','every text column a view displays can be found with that view\'s text filter',()=>{
+    load([nf({destination_port:'3389',application_name:'MS.RDP',sensor_id:'FW-EDGE-02'}),nf({destination_port:'443',application_name:'SSL_TLSv1.3'}),
+      au({action_result:'FAILED',mfa_result:'MFA_DENIED',application_name:'Exchange Online'}),au({action_result:'SUCCESS',mfa_result:'MFA_SUCCESS',application_name:'Teams'})]);
+    const probe=(view,box,draw,cnt,text)=>{ q(box).value=text; draw(); const r=`${count(cnt)}/${currentRows(view).length}`; q(box).value=''; draw(); return r; };
+    const r={
+      'timeline "rdp"':probe('timeline','#tl-q',drawTimeline,'#tl-count','rdp'),'timeline "HTTP/S"':probe('timeline','#tl-q',drawTimeline,'#tl-count','HTTP/S'),
+      'timeline "3389"':probe('timeline','#tl-q',drawTimeline,'#tl-count','3389'),'timeline "failed"':probe('timeline','#tl-q',drawTimeline,'#tl-count','failed'),
+      'netflow "ms.rdp"':probe('netflow','#nf-q',drawNetflow,'#nf-count','ms.rdp'),'netflow "fw-edge-02"':probe('netflow','#nf-q',drawNetflow,'#nf-count','fw-edge-02'),
+      'auth "mfa_denied"':probe('auth','#au-q',drawAuth,'#au-count','mfa_denied'),'auth "exchange"':probe('auth','#au-q',drawAuth,'#au-count','exchange'),
+    };
+    return {pass:Object.values(r).every(v=>v==='1/1'),detail:'shown/exported per search (each should be 1/1): '+JSON.stringify(r)};
   });
 
   clean();

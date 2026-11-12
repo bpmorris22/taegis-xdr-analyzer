@@ -1,6 +1,6 @@
 # Taegis NetFlow Analyzer
 
-**Current build:** `Taegis-NetFlow-Analyzer-v0.6.4.html` (v0.6.4)
+**Current build:** `Taegis-NetFlow-Analyzer-v0.6.5.html` (v0.6.5)
 
 A single-file, **100% client-side** HTML tool for triaging **Secureworks Taegis XDR**
 search exports — the 252-column normalized event schema that carries FortiGate
@@ -84,7 +84,12 @@ _All screenshots use the fully synthetic sample in [`sample/`](sample/) — ever
   (distinct destination ports per source — a scanning indicator), and a
   direction filter (client→server / server→client resets).
 - **Auth / logon timeline** — `auth` + `cloudaudit` events (M365 / Entra sign-ins)
-  with user, source IP, result, **MFA result**, and application.
+  with user, source IP, result, **MFA result**, and application. When
+  `mfa_result` is empty on a sign-in event, `mfa_used` = `true` / `false` is
+  shown (and exported) as `MFA_USED` / `MFA_NOT_USED`; if both are absent the
+  MFA cell stays empty.
+- **Text filters** — each view's filter box searches every text column that
+  view displays (including the Service tag, application, device, and MFA).
 - **IOC sweep** — paste or load a list of IPv4 / IPv6 addresses, IPv4 CIDRs,
   domains, or URLs; matched events are highlighted across every view
   (CIDR-aware matching).
@@ -94,6 +99,9 @@ _All screenshots use the fully synthetic sample in [`sample/`](sample/) — ever
     `additional_*_addresses` columns; domains against every populated domain
     column (`domain_name`, `source_domain_name`, `target_domain_name`,
     `dns_name`) and `additional_domain_names`, not only the one displayed.
+  - Domain matching ignores case and a trailing root dot (`evil.example.`).
+    JSON arrays in the `additional_*` columns are decoded first, so an escaped
+    value such as `["evil.example"]` matches like the plain one.
   - A sweep (or clearing the list) refreshes the highlighting on every table.
   - Tokens that are not an address or hostname (hashes, e-mail addresses, stray
     words) are skipped and reported as "ignored" next to the parsed counts.
@@ -119,7 +127,7 @@ footer of the page.
 
 ## Usage
 
-1. Open `Taegis-NetFlow-Analyzer-v0.6.4.html` in a browser (double-click), or grab
+1. Open `Taegis-NetFlow-Analyzer-v0.6.5.html` in a browser (double-click), or grab
    it from the [Releases](../../releases/latest) page.
 2. Drag a Taegis XDR export CSV onto the drop zone (or click **Load CSV…**).
 3. Use the tabs to triage. Click any IP to filter all views to it. Set a

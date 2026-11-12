@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Taegis NetFlow Analyzer v0.6.4</title>
+<title>Taegis NetFlow Analyzer v0.6.5</title>
 <style>
   :root{
     --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#30363d;
@@ -90,7 +90,7 @@
 </head>
 <body>
 <header>
-  <h1>Taegis NetFlow Analyzer <small>v0.6.4 · Taegis XDR / FortiGate triage</small></h1>
+  <h1>Taegis NetFlow Analyzer <small>v0.6.5 · Taegis XDR / FortiGate triage</small></h1>
   <span class="pill">100% client-side · no network</span>
   <span class="pill" id="fname">no file loaded</span>
   <span class="pill" id="srcpill"></span>
@@ -274,7 +274,7 @@ function parseCSV(text, pick){
 }
 
 /* ---------- state ---------- */
-const TOOL='Taegis NetFlow Analyzer', VERSION='v0.6.4';
+const TOOL='Taegis NetFlow Analyzer', VERSION='v0.6.5';
 const LARGE_FILE=100*1048576; // above this, warn that parsing takes a while
 let HEADER=[], IDX={}, REC=[], IOCS=null, FILENAME='', FILESIZE=0, LOADMS=null, DATAMIN=null, DATAMAX=null;
 const VIEWROWS={};  // rows each view last rendered (filtered and sorted) — exports and "copy" use exactly these
@@ -421,8 +421,18 @@ function own(s){
 }
 function sval(raw, idx){ return own((val(raw,idx)||'').trim()); }
 function firstNonEmpty(raw, idxs){ for(const ix of idxs){ const v=val(raw,ix); if(v && v.trim()) return own(v.trim()); } return ''; }
-/* multi-value columns (JSON array or delimited list) -> array of values */
-function listVals(raw, idx){ const v=val(raw,idx); return v?v.split(/[\s,;|\[\]"']+/).filter(Boolean).map(own):[]; }
+/* multi-value columns -> array of values. A JSON array is decoded with JSON.parse so that escapes such as
+   . become the characters they stand for (nested arrays are flattened; only string and number members
+   are kept). Anything else — including a malformed array — is read as a list delimited by whitespace , ; or |. */
+function listVals(raw, idx){
+  const v=(val(raw,idx)||'').trim(); if(!v) return [];
+  let items=null;
+  if(v[0]==='['){ try{ const j=JSON.parse(v); if(Array.isArray(j)) items=j.flat(Infinity).filter(x=>typeof x==='string'||typeof x==='number').map(x=>String(x).trim()); }catch(e){} }
+  if(!items) items=v.split(/[\s,;|\[\]"']+/);
+  return items.filter(Boolean).map(own);
+}
+/* domain form used for matching on both sides (IOC list and evidence): lower case, no trailing root dot */
+function canonDomain(s){ return (s||'').toLowerCase().replace(/\.+$/,''); }
 
 /* map header-name columns once */
 let C={};
@@ -493,7 +503,7 @@ function normalize(raw){
     pkts:num(val(raw,C.tx_p))+num(val(raw,C.rx_p)),
     app:sval(raw,C.app),
     dir:sval(raw,C.direction),
-    mfa:own((val(raw,C.mfa_res)||(val(raw,C.mfa_used)==='true'?'MFA_USED':'')||'').trim()),
+    mfa:sval(raw,C.mfa_res),   // an explicit result wins; otherwise filled from mfa_used below
     event:sval(raw,C.event),
     vendor:sval(raw,C.vendor),
     sensor:sval(raw,C.sensor),
@@ -512,6 +522,9 @@ function normalize(raw){
   const xd=listVals(raw,C.domain_extra);
   for(const ix of C.domain){ const v=sval(raw,ix); if(v&&v!==r.domain&&!xd.includes(v)) xd.push(v); }
   if(xd.length) r.xdoms=xd;
+  // mfa_used has three states: true, false, and absent. "false" is evidence (MFA was not used), not missing data.
+  // Sign-in events only: a blanket "false" on a netflow row says nothing about MFA.
+  if(!r.mfa&&r.cat==='auth'){ const u=(val(raw,C.mfa_used)||'').trim().toLowerCase(); r.mfa=u==='true'?'MFA_USED':u==='false'?'MFA_NOT_USED':''; }
   r.pub=pubIP(r.src)||pubIP(r.dst);
   const g=parseGeo(r.dgeo); r.dasn=own(g.asn); r.dloc=own(g.loc);
   return r;
@@ -646,7 +659,8 @@ function drawNetflow(){
   $('#nf-topdst').innerHTML=topNBytes(all,r=>r.dst);
   $('#nf-topport').innerHTML=topN(all,r=>r.dport);
   const af=$('#nf-action').value, ap=svcPorts(nfSvc);
-  const tm=textMatch($('#nf-q').value,r=>[r.src,r.sport,r.dst,r.dport,r.proto,r.action,svcLabel(r),r.dasn,r.dloc,r.sgeo,r.dgeo]);
+  // the search fields of each view cover every text column its table displays
+  const tm=textMatch($('#nf-q').value,r=>[r.src,r.sport,r.dst,r.dport,r.proto,r.action,svcLabel(r),r.app,r.dasn,r.dloc,r.device,r.sgeo,r.dgeo]);
   const rows=all.filter(r=>svcOK(r,nfSvc,ap)&&(!af||r.action===af)&&(!tm||tm(r)));
   const cols=[
     {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
@@ -711,7 +725,7 @@ function drawAuth(){
   $('#au-topip').innerHTML=topN(all,r=>r.src||r.dst);
   $('#au-result').innerHTML=topN(all,r=>r.result||r.action||r.authres);
   const rf=$('#au-res').value;
-  const tm=textMatch($('#au-q').value,r=>[r.user,r.src,r.dst,r.result,r.action,r.event,r.domain,r.authres,r.type]);
+  const tm=textMatch($('#au-q').value,r=>[r.user,r.src,r.dst,r.result,r.action,r.event,r.domain,r.authres,r.type,r.mfa,r.app,r.sgeo]);
   const rows=all.filter(r=>(!rf||(r.result||r.action)===rf)&&(!tm||tm(r)));
   const cols=[
     {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
@@ -773,7 +787,7 @@ function parseIOCs(text){
       if(v6){ ips.add(v6); continue; }
       tok=tok.replace(/:\d+$/,'');                                       // host:port
       if(ipToInt(tok)!=null){ ips.add(tok); continue; }
-      tok=tok.toLowerCase().replace(/^\*\./,'').replace(/\.$/,'');
+      tok=canonDomain(tok.replace(/^\*\./,''));
       // must look like a hostname with a non-numeric last label; hashes, e-mail addresses and stray words are counted as ignored
       if(/^[a-z0-9_-]+(\.[a-z0-9_-]+)+$/.test(tok)&&/[a-z]/.test(tok.slice(tok.lastIndexOf('.')+1))) doms.add(tok); else ignored++;
     }
@@ -789,8 +803,8 @@ function iocHit(r){
     if(IOCS.cidrs.length){ const n=ipToInt(ip); if(n!=null) for(const [base,mask] of IOCS.cidrs){ if(((n&mask)>>>0)===base) return ip; } }
   }
   if(IOCS.doms.size) for(const dom of r.xdoms?[r.domain,...r.xdoms]:[r.domain]){
-    const dl=(dom||'').toLowerCase(); if(!dl) continue;
-    for(const d of IOCS.doms){ if(dl===d||dl.endsWith('.'+d)) return dom; }
+    const dl=canonDomain(dom); if(!dl) continue;   // "evil.example." (absolute DNS name) must match like "evil.example"
+    for(const d of IOCS.doms){ if(dl===d||dl.endsWith('.'+d)) return dom; }   // the evidence is returned as it appears in the data
   }
   return null;
 }
@@ -832,7 +846,7 @@ function drawIOC(){
 function drawTimeline(){
   syncGF();
   const tf=$('#tl-type').value, ap=svcPorts(tlSvc);
-  const tm=textMatch($('#tl-q').value,r=>[r.type,r.action,r.result,r.src,r.sport,r.dst,r.dport,r.proto,r.user,r.domain,r.event,r.host,r.device,r.sgeo,r.dgeo]);
+  const tm=textMatch($('#tl-q').value,r=>[r.type,r.action,r.result,r.src,r.sport,r.dst,r.dport,svcLabel(r),r.proto,r.user,r.domain,r.event,r.host,r.device,r.sgeo,r.dgeo]);
   const rows=REC.filter(r=>(!tf||r.type===tf)&&rowPass(r)&&svcOK(r,tlSvc,ap)&&(!tm||tm(r)));
   const cols=[
     {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},

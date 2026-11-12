@@ -18,7 +18,7 @@ Then open <http://127.0.0.1:8765/tests/run.html>. The page tests the newest
 heading and the tab title (`PASS · …` / `FAIL · …`).
 
 - Another port: `node tests/serve.js 9000`
-- A specific build: `…/tests/run.html?build=Taegis-NetFlow-Analyzer-v0.6.4.html`
+- A specific build: `…/tests/run.html?build=Taegis-NetFlow-Analyzer-v0.6.5.html`
 
 The server only listens on `127.0.0.1` and only serves files from this repo. It
 is needed because browsers block a page opened from `file://` from reading the
@@ -53,10 +53,15 @@ other files.
 | `17` | A CSV without the required Taegis columns is rejected; a sparse export still loads |
 | `18` | "Copy for case notes" copies the timeline as filtered and sorted on screen |
 | `19` | IPv4 parsing is strict and the private ranges have the right boundaries |
+| `20` | `additional_*` columns are decoded as JSON arrays before IOC matching (escapes, nested, malformed, delimited) |
+| `21` | A trailing DNS root dot on evidence domains does not prevent an IOC match |
+| `22` | `mfa_used=false` is kept as `MFA_NOT_USED`, distinct from missing MFA data |
+| `23` | Every text column a view displays can be found with that view's text filter |
 
 Tests `1`–`10c` correspond to the ten findings fixed in v0.6.3 (they fail on
-v0.6.2); `11`–`18` to the eight fixed in v0.6.4 (they fail on v0.6.3). The rest
-are guards that pass on all of those builds.
+v0.6.2); `11`–`18` to the eight fixed in v0.6.4 (they fail on v0.6.3); `20`–`23`
+to the four fixed in v0.6.5 (they fail on v0.6.4). The rest are guards that pass
+on all of those builds.
 
 These tests check behaviour, not speed. Do not read load or redraw timings off a
 browser tab that is in the background: browsers run hidden pages at reduced
