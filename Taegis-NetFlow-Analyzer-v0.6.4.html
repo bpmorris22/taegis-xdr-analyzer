@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Taegis NetFlow Analyzer v0.6.3</title>
+<title>Taegis NetFlow Analyzer v0.6.4</title>
 <style>
   :root{
     --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#30363d;
@@ -90,7 +90,7 @@
 </head>
 <body>
 <header>
-  <h1>Taegis NetFlow Analyzer <small>v0.6.3 · Taegis XDR / FortiGate triage</small></h1>
+  <h1>Taegis NetFlow Analyzer <small>v0.6.4 · Taegis XDR / FortiGate triage</small></h1>
   <span class="pill">100% client-side · no network</span>
   <span class="pill" id="fname">no file loaded</span>
   <span class="pill" id="srcpill"></span>
@@ -238,8 +238,9 @@
    Fields are cut out with slice()/indexOf() rather than built char-by-char: per-character
    `field+=c` concatenation needs several GB for a ~300 MB export and kills the tab.
    pick(headerRow), if given, returns a true/false list per column; columns marked false are
-   skipped over and left as ''. Most of a Taegis export is JSON blobs the analyzer never reads,
-   and un-escaping their "" pairs was where nearly all of the parse time went. */
+   skipped over and left as ''. Most of a Taegis export is JSON blobs the analyzer never reads;
+   not materialising them cuts parse time by roughly 40% and most of the memory.
+   Throws a LoadError if the text ends inside a quoted field (a truncated or damaged file). */
 function parseCSV(text, pick){
   const rows=[]; let row=[], mask=null, i=0, n=text.length;
   if(text.charCodeAt(0)===0xFEFF) i=1; // strip BOM
@@ -250,7 +251,8 @@ function parseCSV(text, pick){
       i++; let s=i, parts=null;
       for(;;){
         const j=text.indexOf('"',i);
-        if(j<0){ if(want) f=(parts?parts.join(''):'')+text.slice(s); i=n; break; } // unterminated quote
+        // EOF inside a quoted field: the file is cut off or damaged. Loading it would silently swallow every later row into this field.
+        if(j<0) throw new LoadError(`the file ends inside a quoted field that starts on CSV row ${rows.length+1} — it looks truncated or damaged`);
         if(text.charCodeAt(j+1)===34){ if(want) (parts||(parts=[])).push(text.slice(s,j+1)); i=s=j+2; continue; }
         if(want) f=parts?(parts.push(text.slice(s,j)),parts.join('')):text.slice(s,j);
         i=j+1; break;
@@ -272,10 +274,11 @@ function parseCSV(text, pick){
 }
 
 /* ---------- state ---------- */
-const TOOL='Taegis NetFlow Analyzer', VERSION='v0.6.3';
+const TOOL='Taegis NetFlow Analyzer', VERSION='v0.6.4';
 const LARGE_FILE=100*1048576; // above this, warn that parsing takes a while
 let HEADER=[], IDX={}, REC=[], IOCS=null, FILENAME='', FILESIZE=0, LOADMS=null, DATAMIN=null, DATAMAX=null;
-const VIEWROWS={};  // rows each view last rendered (after all filters) — exports and "copy" use exactly these
+const VIEWROWS={};  // rows each view last rendered (filtered and sorted) — exports and "copy" use exactly these
+class LoadError extends Error{}   // the file itself is the problem (truncated, not a Taegis export, no events); message is shown as-is
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 function debounce(fn,ms=200){ let t; return ()=>{ clearTimeout(t); t=setTimeout(fn,ms); }; }
 
@@ -283,7 +286,11 @@ function debounce(fn,ms=200){ let t; return ()=>{ clearTimeout(t); t=setTimeout(
 function gms(sel){ const v=$(sel).value; if(!v) return null; const s=(v.length===16?v+':00':v)+'Z'; const t=Date.parse(s); return isNaN(t)?null:t; }
 /* the global filter inputs are read once at the start of each draw (syncGF), not once per row */
 const GF={from:null,to:null,pub:false};
-function syncGF(){ GF.from=gms('#g-from'); GF.to=gms('#g-to'); GF.pub=$('#g-public').checked; }
+function syncGF(){
+  const to=gms('#g-to');
+  GF.from=gms('#g-from'); GF.to=to==null?null:to+999;   // the boxes hold whole seconds: "to 01:00:01" covers all of that second (…01.999)
+  GF.pub=$('#g-public').checked;
+}
 function timeOK(r){ if(GF.from!=null&&r.tsv<GF.from) return false; if(GF.to!=null&&r.tsv>GF.to) return false; return true; }
 function toUTCInput(ms){ return new Date(ms).toISOString().slice(0,19); }
 function isReset(r){ return r.cat==='netflow' && /RESET|RST/i.test(r.action); }
@@ -292,19 +299,37 @@ function resetDir(r){ const a=(r.action||'').toUpperCase(); if(a.includes('CLIEN
 /* public-IP filter: an address is "public" if it is a valid IP and NOT in any
    RFC1918 / loopback / link-local / CGNAT / documentation / multicast / reserved range.
    (ipToInt is declared below; function declarations hoist, so this is fine.) */
+const PRIV4=[['10.0.0.0',8],['172.16.0.0',12],['192.168.0.0',16],['127.0.0.0',8],['169.254.0.0',16],['100.64.0.0',10],['0.0.0.0',8],
+  ['224.0.0.0',4],['240.0.0.0',4],['192.0.0.0',24],['192.0.2.0',24],['198.51.100.0',24],['203.0.113.0',24],['198.18.0.0',15]]
+  .map(([a,bits])=>{ const mask=(~0<<(32-bits))>>>0; return [(ipToInt(a)&mask)>>>0,mask]; });   // [base, mask], built once
 function isPrivate4(ip){
   const n=ipToInt(ip); if(n==null) return false;
-  const inb=(a,bits)=>{ const base=ipToInt(a); const mask=bits===0?0:(~0<<(32-bits))>>>0; return (n&mask)===(base&mask); };
-  return inb('10.0.0.0',8)||inb('172.16.0.0',12)||inb('192.168.0.0',16)||inb('127.0.0.0',8)||
-         inb('169.254.0.0',16)||inb('100.64.0.0',10)||inb('0.0.0.0',8)||inb('224.0.0.0',4)||
-         inb('240.0.0.0',4)||inb('192.0.0.0',24)||inb('192.0.2.0',24)||inb('198.51.100.0',24)||
-         inb('203.0.113.0',24)||inb('198.18.0.0',15)||ip==='255.255.255.255';
+  for(const [base,mask] of PRIV4){ if(((n&mask)>>>0)===base) return true; }   // 240.0.0.0/4 includes 255.255.255.255
+  return false;
 }
 function isPublicIP(ip){
   if(!ip) return false; ip=ip.trim();
-  if(ip.includes(':')){ const s=ip.toLowerCase(); return !(s==='::1'||s==='::'||s.startsWith('fe80')||s.startsWith('fc')||s.startsWith('fd')); }
+  if(ip.includes(':')) return isPublic6(ip);
   if(ipToInt(ip)==null) return false;            // not a v4 address (hostname, blank, etc.)
   return !isPrivate4(ip);
+}
+/* isPublicIP with a per-load cache: addresses repeat heavily, so each distinct one is classified once */
+let PUB=null;
+function pubIP(ip){ if(!PUB) return isPublicIP(ip); let v=PUB.get(ip); if(v===undefined){ v=isPublicIP(ip); PUB.set(ip,v); } return v; }
+/* IPv6: must parse, then is classified by address bits. Non-public: unspecified (::), loopback (::1),
+   link-local fe80::/10, site-local fec0::/10, unique-local fc00::/7, multicast ff00::/8, documentation
+   2001:db8::/32 and 3fff::/20, discard-only 100::/64. Addresses that embed an IPv4 address (IPv4-mapped
+   ::ffff:a.b.c.d, IPv4-compatible ::a.b.c.d, NAT64 64:ff9b::/96) follow the IPv4 rules for that address.
+   Every other valid address counts as public. */
+function isPublic6(ip){
+  const k=normIP6(ip); if(!k) return false;      // malformed
+  const h=k.split(':').map(x=>parseInt(x,16));
+  const v4=()=>!isPrivate4([h[6]>>8,h[6]&255,h[7]>>8,h[7]&255].join('.'));
+  if(!h[0]&&!h[1]&&!h[2]&&!h[3]&&!h[4]&&(h[5]===0||h[5]===0xffff)) return v4();   // also covers :: and ::1 (0.0.0.0/8)
+  if(h[0]===0x64&&h[1]===0xff9b&&!h[2]&&!h[3]&&!h[4]&&!h[5]) return v4();
+  if((h[0]&0xffc0)===0xfe80||(h[0]&0xffc0)===0xfec0||(h[0]&0xfe00)===0xfc00||(h[0]&0xff00)===0xff00) return false;
+  if((h[0]===0x2001&&h[1]===0xdb8)||(h[0]===0x3fff&&h[1]<0x1000)||(h[0]===0x100&&!h[1]&&!h[2]&&!h[3])) return false;
+  return true;
 }
 function publicOK(r){ return !GF.pub||r.pub; }   // r.pub is worked out once at load
 /* single gate every view applies: time range AND public-IP toggle */
@@ -479,12 +504,15 @@ function normalize(raw){
     sgeo:sval(raw,C.src_geo),
     dgeo:sval(raw,C.dst_geo),
     authres:sval(raw,C.auth_res),
-    xips:null, xdoms:null,   // extra addresses / domains from the additional_* columns (IOC sweep only)
+    xips:null, xdoms:null,   // further addresses / domains the IOC sweep must also check (not displayed)
     pub:false, dasn:'', dloc:'', __ioc:null,
   };
   const xi=listVals(raw,C.src_extra).concat(listVals(raw,C.dst_extra)); if(xi.length) r.xips=xi;
-  const xd=listVals(raw,C.domain_extra); if(xd.length) r.xdoms=xd;
-  r.pub=isPublicIP(r.src)||isPublicIP(r.dst);
+  // r.domain is only the first populated domain column (for display); keep the others for matching too
+  const xd=listVals(raw,C.domain_extra);
+  for(const ix of C.domain){ const v=sval(raw,ix); if(v&&v!==r.domain&&!xd.includes(v)) xd.push(v); }
+  if(xd.length) r.xdoms=xd;
+  r.pub=pubIP(r.src)||pubIP(r.dst);
   const g=parseGeo(r.dgeo); r.dasn=own(g.asn); r.dloc=own(g.loc);
   return r;
 }
@@ -548,7 +576,7 @@ function topNBytes(records, keyFn, n=10){
 
 /* ---------- sortable table renderer ---------- */
 const MAXROWS=4000;
-function renderTable(el, cols, rows, sortState){
+function renderTable(el, cols, rows, sortState, view){
   let data=rows;
   if(sortState && sortState.key!=null){
     const k=sortState.key, dir=sortState.dir;
@@ -558,6 +586,7 @@ function renderTable(el, cols, rows, sortState){
       x=String(x); y=String(y); return x<y?-dir:x>y?dir:0;
     });
   }
+  if(view) VIEWROWS[view]=data;   // filtered AND sorted: exports and case notes follow the table exactly
   const shown=data.slice(0,MAXROWS);
   let h='<thead><tr>'+cols.map((c,i)=>{
     const arrow=sortState&&sortState.key===i?(sortState.dir>0?' ▲':' ▼'):'';
@@ -573,7 +602,7 @@ function renderTable(el, cols, rows, sortState){
   el.querySelectorAll('th').forEach(th=>th.onclick=()=>{
     const k=+th.dataset.k;
     if(sortState.key===k) sortState.dir*=-1; else {sortState.key=k;sortState.dir=1;}
-    renderTable(el,cols,rows,sortState);
+    renderTable(el,cols,rows,sortState,view);
   });
   // column-resize handles (drag the right edge of a header; widths persist per view)
   el.querySelectorAll('th .rz').forEach(hd=>{
@@ -618,7 +647,7 @@ function drawNetflow(){
   $('#nf-topport').innerHTML=topN(all,r=>r.dport);
   const af=$('#nf-action').value, ap=svcPorts(nfSvc);
   const tm=textMatch($('#nf-q').value,r=>[r.src,r.sport,r.dst,r.dport,r.proto,r.action,svcLabel(r),r.dasn,r.dloc,r.sgeo,r.dgeo]);
-  const rows=VIEWROWS.netflow=all.filter(r=>svcOK(r,nfSvc,ap)&&(!af||r.action===af)&&(!tm||tm(r)));
+  const rows=all.filter(r=>svcOK(r,nfSvc,ap)&&(!af||r.action===af)&&(!tm||tm(r)));
   const cols=[
     {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
     {h:'Action',sort:r=>r.action,td:r=>`<td>${resultTag(r)}</td>`},
@@ -635,7 +664,7 @@ function drawNetflow(){
     {h:'Device',sort:r=>r.device,td:r=>`<td class="mono">${esc(r.device)}</td>`},
     {h:'Dst geo (raw)',sort:r=>r.dgeo,td:r=>`<td class="muted" title="${esc(r.dgeo)}">${esc(r.dgeo)}</td>`},
   ];
-  const {total,shown}=renderTable($('#nf-table'),cols,rows,sortNF);
+  const {total,shown}=renderTable($('#nf-table'),cols,rows,sortNF,'netflow');
   $('#nf-count').textContent=`${total.toLocaleString()} flows`+(shown<total?` (showing ${shown.toLocaleString()})`:'');
 }
 
@@ -655,7 +684,7 @@ function drawReset(){
     `<span class="val">${v} port${v===1?'':'s'}</span></div>`).join('') || '<span class="muted">none</span>';
   const df=$('#rs-dir').value, ap=svcPorts(rsSvc);
   const tm=textMatch($('#rs-q').value,r=>[r.src,r.sport,r.dst,r.dport,r.proto,r.app,r.action,svcLabel(r),r.dasn,r.dloc,r.dgeo]);
-  const rows=VIEWROWS.reset=all.filter(r=>svcOK(r,rsSvc,ap)&&(!df||resetDir(r)===df)&&(!tm||tm(r)));
+  const rows=all.filter(r=>svcOK(r,rsSvc,ap)&&(!df||resetDir(r)===df)&&(!tm||tm(r)));
   const cols=[
     {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
     {h:'Reset',sort:r=>r.action,td:r=>`<td><span class="tag bad" title="${esc(r.action)}">${resetDir(r)||'RST'}</span></td>`},
@@ -671,7 +700,7 @@ function drawReset(){
     {h:'Dst Ctry/City',sort:r=>r.dloc,td:r=>`<td class="mono">${esc(r.dloc)}</td>`},
     {h:'Dst geo (raw)',sort:r=>r.dgeo,td:r=>`<td class="muted" title="${esc(r.dgeo)}">${esc(r.dgeo)}</td>`},
   ];
-  const {total,shown}=renderTable($('#rs-table'),cols,rows,sortRS);
+  const {total,shown}=renderTable($('#rs-table'),cols,rows,sortRS,'reset');
   $('#rs-count').textContent=`${total.toLocaleString()} reset flows`+(shown<total?` (showing ${shown.toLocaleString()})`:'');
 }
 
@@ -683,7 +712,7 @@ function drawAuth(){
   $('#au-result').innerHTML=topN(all,r=>r.result||r.action||r.authres);
   const rf=$('#au-res').value;
   const tm=textMatch($('#au-q').value,r=>[r.user,r.src,r.dst,r.result,r.action,r.event,r.domain,r.authres,r.type]);
-  const rows=VIEWROWS.auth=all.filter(r=>(!rf||(r.result||r.action)===rf)&&(!tm||tm(r)));
+  const rows=all.filter(r=>(!rf||(r.result||r.action)===rf)&&(!tm||tm(r)));
   const cols=[
     {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
     {h:'Type',sort:r=>r.type,td:r=>`<td><span class="tag muted">${esc(r.type)}</span></td>`},
@@ -695,12 +724,21 @@ function drawAuth(){
     {h:'Application',sort:r=>r.app,td:r=>`<td title="${esc(r.app)}">${esc(r.app)}</td>`},
     {h:'Geo',sort:r=>r.sgeo,td:r=>`<td title="${esc(r.sgeo)}">${esc(r.sgeo)}</td>`},
   ];
-  const {total,shown}=renderTable($('#au-table'),cols,rows,sortAU);
+  const {total,shown}=renderTable($('#au-table'),cols,rows,sortAU,'auth');
   $('#au-count').textContent=`${total.toLocaleString()} auth events`+(shown<total?` (showing ${shown.toLocaleString()})`:'');
 }
 
 /* ---------- IOC sweep ---------- */
-function ipToInt(ip){ const p=ip.split('.'); if(p.length!==4) return null; let n=0; for(const o of p){ if(!/^\d{1,3}$/.test(o)) return null; const x=+o; if(x>255) return null; n=n*256+x; } return n>>>0; }
+function ipToInt(ip){ // strict dotted quad (four 1–3 digit octets, each ≤ 255) -> uint32, else null. One pass, no allocation: this runs for every address.
+  let n=0, oct=0, digits=0, parts=0;
+  for(let i=0;i<=ip.length;i++){
+    const c=i<ip.length?ip.charCodeAt(i):46;   // a virtual trailing '.' closes the last octet
+    if(c===46){ if(!digits||oct>255) return null; n=n*256+oct; oct=0; digits=0; parts++; }
+    else if(c>=48&&c<=57&&digits<3){ oct=oct*10+c-48; digits++; }
+    else return null;
+  }
+  return parts===4?n>>>0:null;
+}
 /* canonical IPv6 (8 lowercase hextets, no "::") so 2001:DB8::1 and 2001:db8:0:0:0:0:0:1 compare equal; null if not IPv6 */
 function normIP6(s){
   if(!s||!s.includes(':')) return null;
@@ -757,7 +795,7 @@ function iocHit(r){
   return null;
 }
 function loadIOCFile(f){ const r=new FileReader(); r.onload=()=>{ $('#ioc-input').value=r.result; runSweep(); }; r.readAsText(f); }
-function runSweep(){ markIOCs(); drawIOC(); drawTimeline(); }
+function runSweep(){ markIOCs(); redrawAll(); }   // every table highlights IOC rows, so all of them redraw — also when the list is cleared
 function markIOCs(){ // (re)flag every record against the IOC box and refresh the summary — also re-run when a new file is loaded
   const parsed=parseIOCs($('#ioc-input').value);
   IOCS=parsed;
@@ -773,7 +811,7 @@ function markIOCs(){ // (re)flag every record against the IOC box and refresh th
 }
 function drawIOC(){
   syncGF();
-  const rows=VIEWROWS.ioc=REC.filter(r=>r.__ioc&&rowPass(r));
+  const rows=REC.filter(r=>r.__ioc&&rowPass(r));
   const cols=[
     {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
     {h:'IOC',sort:r=>r.__ioc,td:r=>`<td class="mono" style="color:var(--ioc)">${esc(r.__ioc)}</td>`},
@@ -786,7 +824,7 @@ function drawIOC(){
     {h:'User',sort:r=>r.user,td:r=>`<td class="mono">${esc(r.user)}</td>`},
     {h:'Bytes',sort:r=>r.bytes,td:r=>`<td class="num">${esc(fmtBytes(r.bytes))}</td>`},
   ];
-  const {total}=renderTable($('#ioc-table'),cols,rows,sortIOC);
+  const {total}=renderTable($('#ioc-table'),cols,rows,sortIOC,'ioc');
   $('#ioc-count').textContent=`${total.toLocaleString()} IOC hits`;
 }
 
@@ -795,7 +833,7 @@ function drawTimeline(){
   syncGF();
   const tf=$('#tl-type').value, ap=svcPorts(tlSvc);
   const tm=textMatch($('#tl-q').value,r=>[r.type,r.action,r.result,r.src,r.sport,r.dst,r.dport,r.proto,r.user,r.domain,r.event,r.host,r.device,r.sgeo,r.dgeo]);
-  const rows=VIEWROWS.timeline=REC.filter(r=>(!tf||r.type===tf)&&rowPass(r)&&svcOK(r,tlSvc,ap)&&(!tm||tm(r)));
+  const rows=REC.filter(r=>(!tf||r.type===tf)&&rowPass(r)&&svcOK(r,tlSvc,ap)&&(!tm||tm(r)));
   const cols=[
     {h:'Time (UTC)',sort:r=>r.tsv,td:r=>`<td class="mono">${esc(fmtTs(r.ts))}</td>`},
     {h:'Type',sort:r=>r.type,td:r=>`<td><span class="tag muted">${esc(r.type)}</span></td>`},
@@ -808,7 +846,7 @@ function drawTimeline(){
     {h:'Event / domain',sort:r=>r.event||r.domain,td:r=>`<td title="${esc(r.event||r.domain)}">${esc(r.event||r.domain)}</td>`},
     {h:'Bytes',sort:r=>r.bytes,td:r=>`<td class="num">${esc(fmtBytes(r.bytes))}</td>`},
   ];
-  const {total,shown}=renderTable($('#tl-table'),cols,rows,sortTL);
+  const {total,shown}=renderTable($('#tl-table'),cols,rows,sortTL,'timeline');
   $('#tl-count').textContent=`${total.toLocaleString()} events`+(shown<total?` (showing ${shown.toLocaleString()})`:'');
 }
 
@@ -818,7 +856,15 @@ function currentRows(view){ // redraw first (a debounced keystroke may be pendin
   if(!DRAW[view]) return [];
   DRAW[view](); return VIEWROWS[view]||[];
 }
-const EXPORT_FIELDS=['ts','type','action','result','src','sport','dst','dport','service','proto','bytes','pkts','user','domain','host','event','device','dst_asn','dst_ctry_city','sgeo','dgeo','__ioc'];
+/* one schema for every view: header + getter side by side so they cannot drift apart. New columns are
+   appended at the end so the positions of existing ones stay stable for anything that reads the exports. */
+const EXPORT=[
+  ['time_utc',r=>fmtTs(r.ts)],['type',r=>r.type],['action',r=>r.action],['result',r=>r.result],
+  ['src',r=>r.src],['sport',r=>r.sport],['dst',r=>r.dst],['dport',r=>r.dport],['service',svcLabel],['proto',r=>r.proto],
+  ['bytes',r=>r.bytes],['pkts',r=>r.pkts],['user',r=>r.user],['domain',r=>r.domain],['host',r=>r.host],['event',r=>r.event],
+  ['device',r=>r.device],['dst_asn',r=>r.dasn],['dst_ctry_city',r=>r.dloc],['sgeo',r=>r.sgeo],['dgeo',r=>r.dgeo],['__ioc',r=>r.__ioc||''],
+  ['application',r=>r.app],['mfa',r=>r.mfa],['auth_detail',r=>r.authres],
+];
 /* Log fields are attacker-influenced: a cell starting with = + - @ (or tab / CR) would run as a formula when the
    export is opened in Excel or Sheets, so it gets a leading apostrophe. A lone "-" and plain negative numbers are left alone. */
 function csvCell(v){
@@ -828,8 +874,8 @@ function csvCell(v){
 }
 function exportCSV(view){
   const rows=currentRows(view);
-  const head=['time_utc',...EXPORT_FIELDS.slice(1)].join(',');
-  const body=rows.map(r=>[fmtTs(r.ts),r.type,r.action,r.result,r.src,r.sport,r.dst,r.dport,svcLabel(r),r.proto,r.bytes,r.pkts,r.user,r.domain,r.host,r.event,r.device,r.dasn,r.dloc,r.sgeo,r.dgeo,r.__ioc||''].map(csvCell).join(',')).join('\n');
+  const head=EXPORT.map(c=>c[0]).join(',');
+  const body=rows.map(r=>EXPORT.map(c=>csvCell(c[1](r))).join(',')).join('\n');
   const base=FILENAME?FILENAME.replace(/\.csv$/i,''):'taegis';
   download(`${base}__${view}.csv`, head+'\n'+body);
 }
@@ -838,7 +884,7 @@ function download(name,text){
   const a=document.createElement('a'); a.href=u; a.download=name; a.click(); URL.revokeObjectURL(u);
 }
 function copyNotes(){
-  const rows=(VIEWROWS.timeline||[]).slice(0,500);
+  const rows=currentRows('timeline').slice(0,500);   // first 500 rows of the timeline as currently filtered and sorted
   const lines=rows.map(r=>`${fmtTs(r.ts)} | ${r.type} | ${r.action||r.result} | ${r.src||''}${r.sport?':'+r.sport:''} -> ${r.dst||''}${r.dport?':'+r.dport:''} | ${r.user||''} ${r.domain||''} ${r.event||''}`.trim());
   navigator.clipboard.writeText(lines.join('\n')).then(()=>{
     $('#tl-copy').textContent='Copied '+rows.length+' rows ✓'; setTimeout(()=>$('#tl-copy').textContent='Copy for case notes',1800);
@@ -866,7 +912,9 @@ function buildStats(){
 function stat(n,l){ return `<div class="stat"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`; }
 
 /* ---------- load pipeline ---------- */
-/* Returns false (leaving the loaded dataset untouched) if the text has no event rows. */
+/* Throws — leaving the loaded dataset untouched — if the text is not a usable Taegis export: a LoadError when the
+   file is the problem (empty, truncated, missing the required columns, no event rows), anything else on a real failure.
+   Required columns: `type` (every view classifies on it) and at least one event-time column. */
 function ingest(text){
   const prev=[HEADER,IDX,C]; let rows, recs=[];
   try{
@@ -874,13 +922,16 @@ function ingest(text){
     rows=parseCSV(text,hdr=>{
       HEADER=hdr; IDX=Object.create(null); hdr.forEach((h,i)=>{ h=h.trim(); if(!(h in IDX)) IDX[h]=i; });
       USED=new Set(); buildColMap();
+      const missing=[]; if(C.type<0) missing.push('"type"'); if(!C.ts.length) missing.push('an event-time column (event_time_usec, start_timestamp_usec, …)');
+      if(missing.length) throw new LoadError(`this is not a Taegis XDR event export — the header has no ${missing.join(' and no ')}`);
       return hdr.map((_,i)=>USED.has(i));
     });
-    POOL=new Map();
+    if(!rows.length) throw new LoadError('the file is empty');
+    POOL=new Map(); PUB=new Map();
     for(let i=1;i<rows.length;i++){ if(rows[i].length<2) continue; recs.push(normalize(rows[i])); }
+    if(!recs.length) throw new LoadError('it has a Taegis header but no event rows');
   }catch(e){ [HEADER,IDX,C]=prev; throw e; }
-  finally{ POOL=null; }
-  if(!recs.length){ [HEADER,IDX,C]=prev; alert(rows.length?'No event rows found — is this a Taegis CSV export?':'Empty / unparseable file'); return false; }
+  finally{ POOL=PUB=null; }
   REC=recs;
   $('#drop').classList.add('hidden'); $('#app').classList.remove('hidden');
   LOADMS=null; updateLoadInfo();
@@ -894,7 +945,6 @@ function ingest(text){
   renderChips($('#nf-svc'),nfSvc,drawNetflow); renderChips($('#rs-svc'),rsSvc,drawReset); renderChips($('#tl-svc'),tlSvc,drawTimeline);
   if(IOCS) markIOCs();   // the IOC list is the analyst's input, not the file's: keep it and sweep the new data
   buildStats(); redrawAll();
-  return true;
 }
 function updateLoadInfo(){
   const sz=FILESIZE?fmtMB(FILESIZE):'', t=LOADMS!=null?` · parsed in ${(LOADMS/1000).toFixed(1)} s`:'';
@@ -923,10 +973,13 @@ function readFile(f){
   r.onload=()=>{
     pill.textContent=`parsing ${what}…`+(f.size>LARGE_FILE?' (large file — this can take a while)':'');
     setTimeout(()=>{ // let the status repaint before the synchronous parse
-      const t0=performance.now(); let ok=false;
-      try{ ok=ingest(r.result); }
-      catch(err){ alert(`Failed to parse ${what}: ${err.message}.\nIf the tab ran out of memory, narrow the Taegis search time range and re-export.`); }
-      if(ok){ FILENAME=f.name; FILESIZE=f.size; LOADMS=performance.now()-t0; }
+      const t0=performance.now();
+      try{ ingest(r.result); FILENAME=f.name; FILESIZE=f.size; LOADMS=performance.now()-t0; }
+      catch(err){
+        alert(err instanceof LoadError
+          ? `Could not load ${what}: ${err.message}.`+(REC.length?'\nThe dataset already loaded has been kept.':'')
+          : `Failed to parse ${what}: ${err.message}.\nIf the tab ran out of memory, narrow the Taegis search time range and re-export.`);
+      }
       updateLoadInfo();
     },30);
   };

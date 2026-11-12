@@ -1,6 +1,6 @@
 # Taegis NetFlow Analyzer
 
-**Current build:** `Taegis-NetFlow-Analyzer-v0.6.3.html` (v0.6.3)
+**Current build:** `Taegis-NetFlow-Analyzer-v0.6.4.html` (v0.6.4)
 
 A single-file, **100% client-side** HTML tool for triaging **Secureworks Taegis XDR**
 search exports — the 252-column normalized event schema that carries FortiGate
@@ -39,12 +39,19 @@ _All screenshots use the fully synthetic sample in [`sample/`](sample/) — ever
 - **Global time-range filter (UTC)** — a `From → To` range at the top filters
   **every** view at once. `datetime-local` inputs are interpreted as **UTC** to
   match the displayed event times; a **full range** button auto-fills the
-  dataset's bounds.
+  dataset's bounds. The boxes hold whole seconds, and the `To` bound covers all
+  of its second (`01:00:01` includes events up to `01:00:01.999`).
 - **Public IP only (src or dst)** — a global checkbox that, when ticked, keeps
   only rows where the source or destination is a routable public address.
-  RFC1918, loopback, link-local (169.254/16), CGNAT (100.64/10), documentation,
-  multicast, and reserved ranges are treated as non-public (basic IPv6 ULA /
-  loopback / link-local handling included). Applies to every view.
+  Applies to every view.
+  - IPv4: RFC1918, loopback, link-local (169.254/16), CGNAT (100.64/10),
+    documentation, multicast, and reserved ranges are non-public.
+  - IPv6: the address must parse, then is classified by range. Unspecified,
+    loopback, link-local (`fe80::/10`), site-local (`fec0::/10`), unique-local
+    (`fc00::/7`), multicast (`ff00::/8`), documentation (`2001:db8::/32`,
+    `3fff::/20`) and discard-only (`100::/64`) are non-public. Addresses that
+    embed an IPv4 address (`::ffff:a.b.c.d`, `::a.b.c.d`, NAT64 `64:ff9b::/96`)
+    follow the IPv4 rules. Any other valid address counts as public.
 - **Netflow triage** — top source/destination IPs, top destination IPs by bytes,
   top destination ports, with action / protocol / application columns and a
   filterable, sortable flow table.
@@ -84,8 +91,10 @@ _All screenshots use the fully synthetic sample in [`sample/`](sample/) — ever
   - Defanged indicators (`1.2.3[.]4`, `evil[.]com`, `hxxp://…`) are understood,
     and a URL is reduced to its host. Anything after `#` on a line is a comment.
   - Addresses are checked against the source, destination, NAT, and
-    `additional_*_addresses` columns; domains against the domain columns and
-    `additional_domain_names`.
+    `additional_*_addresses` columns; domains against every populated domain
+    column (`domain_name`, `source_domain_name`, `target_domain_name`,
+    `dns_name`) and `additional_domain_names`, not only the one displayed.
+  - A sweep (or clearing the list) refreshes the highlighting on every table.
   - Tokens that are not an address or hostname (hashes, e-mail addresses, stray
     words) are skipped and reported as "ignored" next to the parsed counts.
     IPv6 CIDRs are not supported.
@@ -97,7 +106,10 @@ _All screenshots use the fully synthetic sample in [`sample/`](sample/) — ever
 - **Unified timeline + export** — all event types merged on one UTC timeline with
   free-text filtering, CSV export of the current view (named after the loaded
   file), and a "copy for case notes" button.
-  - Exports contain exactly the rows the table shows.
+  - Exports and "copy for case notes" contain exactly the rows the table shows,
+    in the table's current sort order (case notes take the first 500).
+  - Every export has the same columns; `application`, `mfa` and `auth_detail`
+    are the last three.
   - Cells that a spreadsheet would run as a formula (starting with `=`, `+`,
     `-`, or `@`) are exported with a leading apostrophe, because log fields are
     attacker-influenced. Strip it if you need the byte-exact value.
@@ -107,7 +119,7 @@ footer of the page.
 
 ## Usage
 
-1. Open `Taegis-NetFlow-Analyzer-v0.6.3.html` in a browser (double-click), or grab
+1. Open `Taegis-NetFlow-Analyzer-v0.6.4.html` in a browser (double-click), or grab
    it from the [Releases](../../releases/latest) page.
 2. Drag a Taegis XDR export CSV onto the drop zone (or click **Load CSV…**).
 3. Use the tabs to triage. Click any IP to filter all views to it. Set a
@@ -130,10 +142,15 @@ comma-splitting):
   of the text instead of building them a character at a time, so files of that size
   load instead of exhausting the tab's memory. Since v0.6.3 it also skips the
   columns the analyzer never reads (most of the JSON blobs) and does not keep the
-  raw rows, which took that export from about 12 s and ~600 MB of heap to about
-  3 s and ~50 MB. The header shows read / parse progress and the file size. The
-  practical ceiling is the browser's ~500 MB string limit; past that, narrow the
-  Taegis search time range and re-export.
+  raw rows, which cut the memory held for that export from about 340 MB to about
+  40 MB at a similar load time (about 3 s to parse and build the records,
+  measured in Node). The header shows read / parse progress and the file size.
+  The practical ceiling is the browser's ~500 MB string limit; past that, narrow
+  the Taegis search time range and re-export.
+- **Damaged or foreign files are rejected** — a file that ends inside a quoted
+  field (a truncated download), or whose header has no `type` column or no
+  event-time column, is refused with a message instead of being loaded as a
+  short or blank dataset. The dataset already on screen is kept.
 - **`*_usec` columns are ISO-8601 strings** — despite the `_usec` suffix,
   `event_time_usec`, `start_timestamp_usec`, etc. hold strings like
   `2026-06-21T09:59:57Z`, not microsecond integers. The parser handles both forms;

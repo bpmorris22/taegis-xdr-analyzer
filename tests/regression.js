@@ -7,7 +7,7 @@ window.__runTests = async function(){
   const alerts=[]; window.alert=m=>alerts.push(String(m));   // failed loads alert(); don't block the run
   const q=s=>document.querySelector(s), qa=s=>[...document.querySelectorAll(s)];
   const cell=v=>/[",\n]/.test(v)?'"'+String(v).replace(/"/g,'""')+'"':String(v);
-  const H=['type','event_time_usec','action','flow_action','action_result','source_address','source_port','destination_address','destination_port','source_nat_address','protocol','tx_byte_count','rx_byte_count','application_name','mfa_result','mfa_used','event_name','sensor_type','sensor_id','dest_ipgeo_summary','user_name','domain_name','additional_destination_addresses','additional_domain_names'];
+  const H=['type','event_time_usec','action','flow_action','action_result','source_address','source_port','destination_address','destination_port','source_nat_address','protocol','tx_byte_count','rx_byte_count','application_name','mfa_result','mfa_used','event_name','sensor_type','sensor_id','dest_ipgeo_summary','user_name','domain_name','additional_destination_addresses','additional_domain_names','source_domain_name','target_domain_name','dns_name','auth_error_code_description'];
   const mk=rows=>[H.join(','),...rows.map(o=>H.map(h=>cell(o[h]??'')).join(','))].join('\n')+'\n';
   const nf=o=>({type:'netflow',event_time_usec:'2026-03-15T14:00:00Z',flow_action:'FW_ALLOWED',source_address:'10.20.5.11',source_port:'51544',destination_address:'140.82.113.20',destination_port:'443',protocol:'6',tx_byte_count:'100',rx_byte_count:'200',sensor_type:'FORTIGATE_FW',sensor_id:'FW-EDGE-01',...o});
   const au=o=>({type:'auth',event_time_usec:'2026-03-15T14:05:00Z',action:'LOGON',source_address:'203.0.113.9',user_name:'a@x.test',...o});
@@ -144,6 +144,105 @@ window.__runTests = async function(){
     load(Array.from({length:50},()=>nf({})));
     const rawRows=(typeof RAW==='undefined')?0:RAW.length, perRec=REC.filter(r=>r.raw!==undefined).length;
     return {pass:rawRows===0&&perRec===0,detail:`rows held in RAW: ${rawRows}; records holding a raw row: ${perRec}`};
+  });
+
+  /* ---- v0.6.4: findings from the external review of v0.6.3 ---- */
+
+  await test('11','IOC sweep checks every populated domain column, not only the first',()=>{
+    load([nf({domain_name:'safe.example',target_domain_name:'evil.example'}),nf({domain_name:'safe.example',source_domain_name:'evil.example'}),
+      nf({domain_name:'safe.example',dns_name:'evil.example'}),nf({domain_name:'evil.example'}),nf({domain_name:'safe.example',additional_domain_names:'["x.evil.example"]'}),nf({domain_name:'safe.example'})]);
+    q('#ioc-input').value='evil.example'; runSweep();
+    const flags=REC.map(r=>r.__ioc?1:0).join('');
+    return {pass:flags==='111110',detail:`rows [target_domain, source_domain, dns_name, domain_name, additional, clean] flagged: ${flags}`};
+  });
+
+  await test('12','a CSV that ends inside a quoted field is rejected and the loaded dataset is kept',async()=>{
+    readFile(new File([mk([nf({}),nf({})])],'good.csv')); await sleep(500);
+    const tryLoad=async(name,text)=>{ const n=alerts.length; readFile(new File([text],name)); await sleep(500); return {file:FILENAME,events:REC.length,alerted:alerts.length>n}; };
+    const a=await tryLoad('truncated.csv','type,event_time_usec,source_address\nnetflow,2026-11-12T01:00:00Z,"10.0.0.1\nnetflow,2026-11-12T01:00:01Z,10.0.0.2\n');
+    const b=await tryLoad('truncated-skipped-column.csv','type,event_time_usec,original_data,source_address\nnetflow,2026-11-12T01:00:00Z,"{""a"":1,10.0.0.1\nnetflow,2026-11-12T01:00:01Z,x,10.0.0.2\n');
+    const c=await tryLoad('multiline.csv','type,event_time_usec,application_name,source_address\nnetflow,2026-11-12T01:00:00Z,"line one\nline two",10.0.0.1\nnetflow,2026-11-12T01:00:01Z,x,10.0.0.2\n');
+    const kept=x=>x.file==='good.csv'&&x.events===2&&x.alerted;
+    return {pass:kept(a)&&kept(b)&&c.file==='multiline.csv'&&c.events===2&&!c.alerted&&REC[0].src==='10.0.0.1',
+      detail:`truncated: ${JSON.stringify(a)}; truncated in a skipped column: ${JSON.stringify(b)}; valid embedded newline (control): ${JSON.stringify(c)}`};
+  });
+
+  await test('13','"full range" keeps events in the last fraction of a second',()=>{
+    load([nf({event_time_usec:'2026-11-12T01:00:00.250Z'}),nf({event_time_usec:'2026-11-12T01:00:01.750Z'}),nf({event_time_usec:'2026-11-12T01:00:01.900Z'})]);
+    q('#g-full').click(); const a={shown:count('#tl-count'),exported:currentRows('timeline').length,to:q('#g-to').value};
+    load([nf({event_time_usec:'2026-11-12T01:00:01.750Z'})]);
+    q('#g-full').click(); const b={shown:count('#tl-count')};
+    return {pass:a.shown===3&&a.exported===3&&b.shown===1,detail:`3 events: ${JSON.stringify(a)}; single fractional-second event: ${JSON.stringify(b)}`};
+  });
+
+  await test('14','exports include the MFA result, failure detail and application the tables show',()=>{
+    const want=['FAILED','INVALID_PASSWORD','MFA_NOT_USED','Exchange Online'];
+    load([au({action_result:'FAILED',auth_error_code_description:'INVALID_PASSWORD',mfa_result:'MFA_NOT_USED',application_name:'Exchange Online'}),nf({application_name:'SSL_TLSv1.3'})]);
+    const grab=view=>{ let cap=''; const orig=window.download; window.download=(n,t)=>{cap=t;}; exportCSV(view); window.download=orig; return parseCSV(cap); };
+    const auth=grab('auth'), net=grab('netflow');
+    const missing=want.filter(v=>{ const i=auth[1].indexOf(v); return i<0||!auth[0][i]; });
+    const appOK=net[1].includes('SSL_TLSv1.3'), sameWidth=auth.every(r=>r.length===auth[0].length);
+    return {pass:missing.length===0&&appOK&&sameWidth,detail:`missing from the auth export: ${JSON.stringify(missing)}; application in the netflow export: ${appOK}; header: ${auth[0].join(',')}`};
+  });
+
+  await test('15','"Public IP only" classifies IPv6 by address range and rejects malformed addresses',()=>{
+    const src=['fe90::1','ff02::1','::ffff:10.0.0.1','not:an:ip','fe80::1','fd12::1','::1','::','2001:db8::1','2001:4860:4860::8888','::ffff:8.8.8.8'];
+    load(src.map(s=>nf({source_address:s,destination_address:'fd00::2'})));
+    q('#g-public').checked=true; redrawAll();
+    const kept=currentRows('netflow').map(r=>r.src).sort();
+    q('#g-public').checked=false; redrawAll();
+    const direct={'febf::1':isPublicIP('febf::1'),'::ffff:127.0.0.1':isPublicIP('::ffff:127.0.0.1'),'2606:4700:4700::1111':isPublicIP('2606:4700:4700::1111'),'8.8.8.8':isPublicIP('8.8.8.8'),'10.1.1.1':isPublicIP('10.1.1.1')};
+    const pass=kept.join()===['2001:4860:4860::8888','::ffff:8.8.8.8'].join()&&!direct['febf::1']&&!direct['::ffff:127.0.0.1']&&direct['2606:4700:4700::1111']&&direct['8.8.8.8']&&!direct['10.1.1.1'];
+    return {pass,detail:`kept by the public-only filter: [${kept.join(', ')}]; isPublicIP: ${JSON.stringify(direct)}`};
+  });
+
+  await test('16','IOC highlights refresh on every table after a sweep and after clearing the list',()=>{
+    load([nf({destination_address:'8.8.8.8'}),nf({destination_address:'8.8.8.8',flow_action:'FW_RESET_CLIENT_TO_SERVER'}),au({source_address:'8.8.8.8'})]);
+    const hl=()=>['#nf-table','#rs-table','#au-table','#tl-table'].map(s=>qa(s+' tbody tr.ioc').length).join(',');
+    q('#ioc-input').value='8.8.8.8'; runSweep(); const a=hl();
+    q('#ioc-input').value=''; runSweep(); const b=hl();
+    return {pass:a==='2,1,1,3'&&b==='0,0,0,0',detail:`highlighted rows [netflow, reset, auth, timeline] after the sweep: ${a}; after clearing: ${b}`};
+  });
+
+  await test('17','a CSV without the required Taegis columns is rejected; a sparse export still loads',async()=>{
+    readFile(new File([mk([nf({}),nf({})])],'good.csv')); await sleep(500);
+    const tryLoad=async(name,text)=>{ const n=alerts.length; readFile(new File([text],name)); await sleep(500); return {file:FILENAME,events:REC.length,alerted:alerts.length>n}; };
+    const a=await tryLoad('unrelated.csv','title,description\nhello,world\n');
+    const b=await tryLoad('no-time-column.csv','type,source_address\nnetflow,10.0.0.1\n');
+    const c=await tryLoad('header-only.csv',H.join(',')+'\n');
+    const d=await tryLoad('sparse.csv','type,event_time_usec\nnetflow,2026-11-12T01:00:00Z\n');
+    const kept=x=>x.file==='good.csv'&&x.events===2&&x.alerted;
+    return {pass:kept(a)&&kept(b)&&kept(c)&&d.file==='sparse.csv'&&d.events===1&&!d.alerted,
+      detail:`unrelated: ${JSON.stringify(a)}; no time column: ${JSON.stringify(b)}; header only: ${JSON.stringify(c)}; sparse but valid (control): ${JSON.stringify(d)}`};
+  });
+
+  await test('18','"Copy for case notes" copies the timeline as filtered and sorted on screen',async()=>{
+    let cap=''; Object.defineProperty(navigator.clipboard,'writeText',{configurable:true,value:t=>{ cap=t; return Promise.resolve(); }});
+    const r={};
+    try{
+      load([nf({event_time_usec:'2026-11-12T01:00:00Z',source_address:'10.0.0.1'}),nf({event_time_usec:'2026-11-12T01:00:01Z',source_address:'10.0.0.2'})]);
+      copyNotes(); await sleep(30);
+      r.tableFirst=q('#tl-table tbody tr td.ip').textContent.trim(); r.notesFirst=(cap.split('\n')[0].match(/10\.0\.0\.\d/)||[''])[0];
+      q('#tl-q').value='10.0.0.2'; q('#tl-q').dispatchEvent(new Event('input',{bubbles:true})); copyNotes(); await sleep(30);
+      r.linesRightAfterTyping=cap.split('\n').length;
+      load(Array.from({length:501},(_,i)=>nf({event_time_usec:new Date(Date.UTC(2026,10,12,1,0,i)).toISOString()})));
+      copyNotes(); await sleep(30); let lines=cap.split('\n');
+      r.newestFirst={lines:lines.length,first:lines[0].slice(11,19),last:lines[499].slice(11,19)};
+      qa('#tl-table th')[0].click(); copyNotes(); await sleep(30); lines=cap.split('\n');   // flip to oldest-first
+      r.oldestFirst={first:lines[0].slice(11,19),last:lines[499].slice(11,19)};
+      qa('#tl-table th')[0].click();                                                      // restore newest-first
+    } finally { delete navigator.clipboard.writeText; }
+    const pass=r.tableFirst==='10.0.0.2'&&r.notesFirst==='10.0.0.2'&&r.linesRightAfterTyping===1
+      &&r.newestFirst.lines===500&&r.newestFirst.first==='01:08:20'&&r.newestFirst.last==='01:00:01'&&r.oldestFirst.first==='01:00:00'&&r.oldestFirst.last==='01:08:19';
+    return {pass,detail:JSON.stringify(r)};
+  });
+
+  await test('19','IPv4 parsing is strict and the private ranges have the right boundaries (guard)',()=>{
+    const parse={'1.2.3.4':16909060,'255.255.255.255':4294967295,'01.2.3.4':16909060,'1.2.3':null,'1.2.3.':null,'1..2.3':null,'256.1.1.1':null,'1.2.3.4.5':null,' 1.2.3.4':null,'0x1.2.3.4':null,'1e1.2.3.4':null,'0001.2.3.4':null,'':null,'a.b.c.d':null};
+    const priv=['10.0.0.0','10.255.255.255','172.16.0.0','172.31.255.255','192.168.0.0','192.168.255.255','127.0.0.1','169.254.1.1','100.64.0.0','100.127.255.255','0.1.2.3','224.0.0.0','239.1.1.1','240.0.0.1','255.255.255.255','192.0.0.5','192.0.2.5','198.51.100.5','203.0.113.5','198.18.0.0','198.19.255.255'];
+    const pub=['9.255.255.255','11.0.0.0','172.15.255.255','172.32.0.0','192.167.255.255','192.169.0.0','100.63.255.255','100.128.0.0','198.17.255.255','198.20.0.0','223.255.255.255','8.8.8.8','126.255.255.255','128.0.0.0'];
+    const badParse=Object.keys(parse).filter(k=>ipToInt(k)!==parse[k]), badPriv=priv.filter(a=>isPublicIP(a)), badPub=pub.filter(a=>!isPublicIP(a));
+    return {pass:!badParse.length&&!badPriv.length&&!badPub.length,detail:`wrong parses: ${JSON.stringify(badParse)}; private seen as public: ${JSON.stringify(badPriv)}; public seen as private: ${JSON.stringify(badPub)}`};
   });
 
   clean();
